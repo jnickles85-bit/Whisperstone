@@ -68,7 +68,7 @@ The bridge doesn't know which slot the game will load next, so every publish wri
 ```lua
 WoWAI_SlotData = {
   ts = "...", now = <bridge epoch seconds>, cwd = "<the bridge's default folder>",
-  agent = "claude", agents = { "claude", "codex", "grok" },   -- the default agent, and the ones the bridge knows
+  agent = "hermes", agents = { "claude", "codex", "grok", "hermes" }, -- the default agent (Whisperstone-local: "hermes"), and the ones the bridge knows
   replies = { { chat = "...", id = 12, status = "working"|"done"|"error", text = "...", cwd = "...", session = "<agent session id>", agent = "codex", denied = { "WebSearch" } }, … },
   restore = { token = "...", chats = { … } },   -- only right after a saved-data reset
 }

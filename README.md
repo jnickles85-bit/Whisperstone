@@ -37,7 +37,7 @@ The bridge drives whichever of these you have installed; each chat can use a dif
 | **Grok Build** (`grok`) | `grok --prompt-file … --output-format streaming-json`, resumed with `-r` | `permissionMode` + the same `allowedTools` rules, translated to Grok's globs | yes, when Grok reports a refused tool |
 | **Ara** (`hermes`) | `hermes chat --query-file - --format stream-json -Q`, resumed with `--resume` | Hermes manages permission internally; `maxTurns` bounds the run | no: no per-tool allowlist to retry against |
 
-`agent` in `bridge/config.json` is the default (`claude`). `/wow-ai agent codex` switches the current chat, or right-click a chat in the left panel and pick **Agent...**; the reply bubbles and the game-chat echo are labelled with whoever answered. A session belongs to the agent that made it, so a chat that changes agent starts a fresh session there (its transcript stays). Install notes, the exact command lines, what each permission mode means per agent, and known limits are in [docs/AGENTS.md](docs/AGENTS.md).
+`agent` in `bridge/config.json` is the default (shipped here as `hermes` — Whisperstone-local; upstream keeps `claude`). `/wow-ai agent codex` switches the current chat, or right-click a chat in the left panel and pick **Agent...**; the reply bubbles and the game-chat echo are labelled with whoever answered. A session belongs to the agent that made it, so a chat that changes agent starts a fresh session there (its transcript stays). Install notes, the exact command lines, what each permission mode means per agent, and known limits are in [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Requirements
 
@@ -142,7 +142,7 @@ The keys you are most likely to touch. Every key, flag and environment variable 
 | Key | Meaning |
 |---|---|
 | `defaultCwd` | folder for chats that haven't been given one with `/wow-ai cd` |
-| `agent` | the agent for chats that haven't picked one with `/wow-ai agent` (`claude`, `codex`, `grok` or `hermes`) |
+| `agent` | the agent for chats that haven't picked one with `/wow-ai agent` (shipped as `hermes` here — Whisperstone-local; upstream ships `claude`; the allowed names are `claude`, `codex`, `grok` or `hermes`) |
 | `agents.<id>.permissionMode`, `.allowedTools`, `.deniedTools`, `.model` | that agent's permissions, allowlist, denylist and model; `.path` where its executable is if the bridge can't find it, `.extraArgs` anything else to pass it |
 | `agents.codex.networkAccess` | let Codex's sandbox reach the network (default `false`) |
 | `maxParallel` | how many chats may run an agent at once (default 3) |

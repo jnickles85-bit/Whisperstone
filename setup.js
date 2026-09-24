@@ -177,6 +177,13 @@ try {
   console.log(`project  : ${cfg.defaultCwd}  (change with /wow-ai cd in game, or defaultCwd in config.json)`);
   console.log(`agent    : ${cfg.agent} by default (change with /wow-ai agent in game, or "agent" in config.json)`);
   console.log(agentReport(cfg));
+  // Whisperstone-local: a fresh install whose default agent isn't on this PC would
+  // answer every default chat with an error — point at the fix before it happens.
+  {
+    const A = require(path.join(BRIDGE, 'agents.js'));
+    const cmd = A.resolveCommand(cfg.agent, A.agentConfig(cfg, cfg.agent));
+    if (!cmd.found) console.log(`  warning  : the default agent "${cfg.agent}" was not found here (${cmd.note}); install it or set "agent" in config.json to one listed above`);
+  }
   console.log('slots    : building the reply-slot pool and signal files...');
   const r = spawnSync(process.execPath, [path.join(BRIDGE, 'install-slots.js')], { stdio: 'inherit' });
   if (r.status !== 0) throw new Error('install-slots.js failed');

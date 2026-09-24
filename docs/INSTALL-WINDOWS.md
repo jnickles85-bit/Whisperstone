@@ -66,7 +66,7 @@ WoW AI bridge
   capture  : on (WowB, 200x48 cells of 4px)
   parallel : up to 3 chats at once
   fallback : ...
-  agent    : claude (default; chats pick their own with /wow-ai agent)
+  agent    : hermes (default; chats pick their own with /wow-ai agent)
   claude   : C:\Users\<you>\.local\bin\claude.exe  [acceptEdits, 11 allowed tool rules]
   codex    : not found - install it (npm install -g @openai/codex, then run `codex` once and log in) or set agents.codex.path in config.json
   grok     : C:\Users\<you>\.grok\bin\grok.exe  [acceptEdits, 11 allowed tool rules]

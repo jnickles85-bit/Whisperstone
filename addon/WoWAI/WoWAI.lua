@@ -1391,11 +1391,11 @@ function WoWAI.FolderPrompt(id)
 	StaticPopup_Show("WOWAI_FOLDER", run.bridgeCwd or "unknown until connected", nil, { id = c.id, cwd = c.cwd })
 end
 
--- The agent this chat talks to, by id ("claude", "codex", "grok"). Empty (or
+-- The agent this chat talks to, by id ("claude", "codex", "grok", "hermes"). Empty (or
 -- "-" / "default") = the bridge's default. The bridge starts a fresh session
 -- when a chat changes agent, since a session belongs to the agent that made it.
 local function AgentList()
-	return run.bridgeAgents and table.concat(run.bridgeAgents, ", ") or "claude, codex, grok"
+	return run.bridgeAgents and table.concat(run.bridgeAgents, ", ") or "claude, codex, grok, hermes"
 end
 
 function WoWAI.SetAgent(rest, c)
@@ -2547,7 +2547,7 @@ local HELP = table.concat({
 	"/wow-ai rename [name]          rename the current chat (no name = dialog; right-clicking the chat in the left panel offers it too)",
 	"/wow-ai delete                 delete the current chat",
 	"/wow-ai cd <folder>            folder this chat's agent works in (relative to the bridge's folder; no folder = back to default). Right-clicking the chat in the left panel and picking Folder does the same",
-	"/wow-ai agent [name]           which agent this chat talks to: claude, codex or grok (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
+	"/wow-ai agent [name]           which agent this chat talks to: claude, codex, grok or hermes (no name = show; default = the bridge's). Right-clicking the chat and picking Agent does the same",
 	"/wow-ai reset                  next message in this chat starts a fresh agent session",
 	"/wow-ai context [on|off]       what the agent is told about your character and where you are (no argument = show it)",
 	"/wow-ai mode pixel             no-reload transport (default)",

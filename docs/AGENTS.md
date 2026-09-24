@@ -4,7 +4,7 @@ The bridge can drive four coding agents: Claude Code, OpenAI Codex, xAI's Grok B
 
 ## Choosing one
 
-- `agent` in `bridge/config.json` is the default for every chat (`claude` unless you change it). The bridge refuses to start on a name it doesn't know.
+- `agent` in `bridge/config.json` is the default for every chat (shipped here as `hermes` — Whisperstone-local; upstream keeps `claude`, see [whisperstone/2026-09-24-default-agent-hermes.md](whisperstone/2026-09-24-default-agent-hermes.md)). The bridge refuses to start on a name it doesn't know.
 - A chat can pick its own with `/wow-ai agent codex`, or right-click the chat in the left panel and choose **Agent...**. `/wow-ai agent default` goes back to the bridge's. A new chat inherits the agent of the chat you were in, like the folder.
 - The choice travels with each message as an `agent=` flag in the strip record, so the bridge needs no restart, and the reply comes back tagged with the agent that wrote it: the bubble label, the `[Codex · chat]` prefix in the game chat and the `To Grok [chat]:` header of `/r` all follow it.
 - A session belongs to the agent (and the folder) that made it. A chat that changes agent starts a fresh session with the new one; the transcript in the window stays.

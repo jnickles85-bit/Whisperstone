@@ -441,7 +441,7 @@ const AGENTS = {
   },
 };
 
-const DEFAULT_AGENT = 'claude';
+const DEFAULT_AGENT = 'hermes'; // Whisperstone-local default (docs/whisperstone/2026-09-24-default-agent-hermes.md); upstream keeps 'claude'
 
 function agentIds() { return Object.keys(AGENTS); }
 

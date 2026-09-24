@@ -663,6 +663,12 @@ function banner() {
   console.log(`  fallback : ${SAVED_VARS}`);
   console.log(`  agent    : ${DEFAULT_AGENT} (default; chats pick their own with /wow-ai agent)`);
   for (const id of A.agentIds()) console.log(`  ${id.padEnd(9)}: ${agentLine(id)}`);
+  // Whisperstone-local: warn (don't fail) when the shipped default isn't on this PC,
+  // so a fresh install's default chat doesn't reply "agent not found".
+  {
+    const cmd = A.resolveCommand(cfg.agent, A.agentConfig(cfg, cfg.agent));
+    if (!cmd.found) console.log(`  warning  : the default agent "${cfg.agent}" is not found here (${cmd.note}) — its chats will get an error reply until it is installed, or "agent" in config.json points at one you have`);
+  }
   console.log(`  sessions : ${Object.keys(state.sessions).length} saved`);
   const ctx = gameContext();
   console.log(`  context  : ${cfg.gameContext === false ? 'off (gameContext in config.json)' : ctx ? (ctx.split('\n').find(l => /^Character:/i.test(l)) || ctx.split('\n')[0]).slice(0, 100) : 'none yet (the addon sends it with its hello; /wow-ai context in game)'}`);

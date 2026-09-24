@@ -17,7 +17,7 @@
     "maxRows": 48,
     "intervalMs": 250
   },
-  "agent": "claude",
+  "agent": "hermes",
   "agents": {
     "claude": {
       "path": "",
