@@ -124,19 +124,24 @@ Maps the three observed event types onto what `bridge.js` expects
 
 ## Known limitations, stated up front
 
-1. **No live progress.** The Claude/Grok parsers show `$ npm test`, `edit file.lua` and so on
-   while a run is in flight. Hermes's stream-json carries no tool events, so an in-game
-   "working…" will show elapsed time and nothing else. Adding it would mean a Hermes-side
-   change (emit tool events on the stream), not an adapter workaround.
-2. **No readable live progress.** The Claude/Grok parsers show `$ npm test`, `edit file.lua`
-   and so on while a run is in flight. Hermes's stream-json carries `tool_use`/`tool_result`
-   when tools are called, but nothing maps to a human progress line, so an in-game
-   "working…" will show elapsed time and nothing else. Adding it would mean a Hermes-side
-   change (richer tool-event payloads), not an adapter workaround.
-3. **This machine has no `claude`/`codex`**, so those entries will report not-installed. The
+1. **No live progress *yet* — but the raw material exists.** Corrected 2026-09-24 after
+   measurement: Hermes's stream-json **does** emit `tool_use` (name + input) and
+   `tool_result` (output + duration) whenever the model calls a tool. My original claim here
+   — "carries no tool events" — was wrong, inferred from a single PONG probe that happened
+   to call no tools. A live forcing run produced:
+   ```json
+   {"type":"tool_use","name":"terminal","input":{"command":"echo WHISPERSTONE_TOOLTEST"}}
+   {"type":"tool_result","name":"terminal","output":"{\"output\": \"WHISPERSTONE_TOOLTEST\", ...}","duration_ms":122,"is_error":false}
+   ```
+   So the fix is **adapter-side, not Hermes-side**: the parser can map `tool_use` onto
+   `describeToolUse()` in `bridge/protocol.js`. Caveat that keeps this honest —
+   `describeToolUse` is keyed to **Claude's** tool names (`Bash`, `Read`, `Edit`), so Hermes's
+   names (`terminal`, `read_file`, …) currently fall through to a bare `"terminal"`. A small
+   name-map is needed for readable lines like `$ echo …`. Tracked as a follow-up card.
+2. **This machine has no `claude`/`codex`**, so those entries will report not-installed. The
    fork's default agent should be set to `hermes` in `bridge/config.json` for this install,
    or the in-game default chat will get an error reply.
-4. **Forever is beta and unstable.** Upstream's own docs note the client sometimes wipes addon
+3. **Forever is beta and unstable.** Upstream's own docs note the client sometimes wipes addon
    saved data; recovery depends on the bridge having been running.
 
 ## Phasing
