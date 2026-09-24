@@ -131,10 +131,51 @@ test('Hermes stream: the captured init/text/result triple gives the session id, 
   c.feed({ type: 'text', text: 'Got' });
   c.feed({ type: 'text', text: ' it.' });
   assert.deepEqual(c.feed({ type: 'result', session_id: 's', exit_code: 0 }).done, { text: 'Got it.', error: false });
-  // A stream error ends the run; unknown event types are ignored (tool_use, usage, …).
+  // A stream error ends the run; other event types don't set done. An unknown
+  // Hermes tool name (fact_store isn't in the name map) degrades to the bare
+  // name rather than crashing — the regression case for the tool_use branch.
   assert.deepEqual(A.hermesParser().feed({ type: 'error', message: 'not logged in' }).done, { text: 'not logged in', error: true });
-  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'fact_store', input: {} }).done, undefined);
+  const unknown = A.hermesParser().feed({ type: 'tool_use', name: 'fact_store', input: {} });
+  assert.deepEqual(unknown.progress, ['fact_store']);
+  assert.equal(unknown.done, undefined);
   assert.deepEqual(A.hermesParser().feed({ type: 'usage', tokens: {} }).done, undefined);
+});
+
+test('Hermes tool progress: the captured tool_use emits a readable line; tool_result stays silent', () => {
+  // Verbatim capture from the live forcing run, 2026-09-24
+  // (docs/whisperstone/2026-09-24-hermes-integration.md).
+  const p = A.hermesParser();
+  const use = p.feed({ type: 'tool_use', name: 'terminal', input: { command: 'echo WHISPERSTONE_TOOLTEST' }, timestamp: 1790280926379 });
+  assert.deepEqual(use.progress, ['$ echo WHISPERSTONE_TOOLTEST']);
+  assert.equal(use.done, undefined);
+  // The matching result is NOT progress: one line per call, not per result.
+  const res = p.feed({ type: 'tool_result', name: 'terminal', output: '{"output": "WHISPERSTONE_TOOLTEST", "exit_code": 0, "error": null}', duration_ms: 122, is_error: false, timestamp: 1790280926503 });
+  assert.deepEqual(res.progress, []);
+  assert.equal(res.done, undefined);
+  // The other Hermes names map to the same human-readable shapes.
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'read_file', input: { path: '/x/y/foo.lua' } }).progress, ['read foo.lua']);
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'write_file', input: { path: '/x/y/bar.md' } }).progress, ['write bar.md']);
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'patch', input: { path: '/x/y/player.gd' } }).progress, ['edit player.gd']);
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'search_files', input: { pattern: 'describeToolUse' } }).progress, ['search describeToolUse']);
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'web_search', input: { query: 'lua 5.1 gsub' } }).progress, ['search: lua 5.1 gsub']);
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'web_extract', input: { urls: ['https://example.com/a'] } }).progress, ['fetch https://example.com/a']);
+});
+
+test('Claude progress output unchanged: Claude names still resolve to the same lines after the Hermes additions', () => {
+  // The additive Hermes cases must not move Claude's output.
+  const p = A.claudeParser();
+  const r = p.feed({
+    type: 'assistant', session_id: 'sess-1',
+    message: { content: [
+      { type: 'text', text: 'Let me look.' },
+      { type: 'tool_use', name: 'Bash', input: { command: 'npm test\nsecond' } },
+      { type: 'tool_use', name: 'Edit', input: { file_path: '/x/player.gd' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: '/x/main.lua' } },
+      { type: 'tool_use', name: 'Grep', input: { pattern: 'LoadOnDemand' } },
+      { type: 'tool_use', name: 'WebSearch', input: { query: 'wow addon' } },
+    ] },
+  });
+  assert.deepEqual(r.progress, ['Let me look.', '$ npm test', 'edit player.gd', 'read main.lua', 'grep LoadOnDemand', 'search: wow addon']);
 });
 
 test('Claude stream: tool calls and text become progress, the result carries the reply and any denials', () => {

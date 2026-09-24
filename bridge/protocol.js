@@ -196,8 +196,10 @@ function ruleFor(d) {
   return name;
 }
 
-// One progress line per Claude tool call, as shown in the game's "working"
-// bubble (Codex and Grok have their own in agents.js).
+// One progress line per tool call, as shown in the game's "working" bubble
+// (Codex and Grok have their own in agents.js). Claude Code's capitalised
+// names and Hermes's snake_case names both flow through here; each case is
+// additive and the unknown-name default is the bare tool name.
 function describeToolUse(block) {
   const inp = block.input || {};
   switch (block.name) {
@@ -210,6 +212,14 @@ function describeToolUse(block) {
     case 'Agent': return `agent: ${inp.description || ''}`;
     case 'WebSearch': return `search: ${inp.query || ''}`;
     case 'WebFetch': return `fetch ${inp.url || ''}`;
+    // Hermes Agent (Ara) tool names, same `{name, input}` event shape.
+    case 'terminal': return `$ ${String(inp.command || '').split('\n')[0].slice(0, 110)}`;
+    case 'read_file': return `read ${path.basename(inp.path || '')}`;
+    case 'write_file': return `write ${path.basename(inp.path || '')}`;
+    case 'patch': return `edit ${path.basename(inp.path || '')}`;
+    case 'search_files': return `search ${inp.pattern || ''}`;
+    case 'web_search': return `search: ${inp.query || ''}`;
+    case 'web_extract': return `fetch ${Array.isArray(inp.urls) ? (inp.urls[0] || '') : (inp.url || '')}`;
     default: return block.name;
   }
 }

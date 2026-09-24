@@ -284,8 +284,9 @@ function grokParser() {
 // Hermes `chat --format stream-json` emits newline-delimited JSON. Measured
 // shapes: a `system`/init with the session id, `text` events that may arrive
 // as one line (a short reply) or as a stream of chunks (a longer one, or when
-// the model calls tools — `tool_use`/`tool_result` interleave and are ignored
-// here; there is no tool progress to surface), and the authoritative
+// the model calls tools — `tool_use` events carry `{name, input}` and map to
+// a progress line via protocol's `describeToolUse`; `tool_result` stays
+// silent: one line per call, not per result), and the authoritative
 // `result` (its text and exit code win over the accumulated stream).
 function hermesParser() {
   let text = ''; // the reply as its `text` events have built it up
@@ -297,6 +298,10 @@ function hermesParser() {
       } else if (ev.type === 'text' && typeof ev.text === 'string') {
         text += ev.text;
         out.done = { text, error: false };
+      } else if (ev.type === 'tool_use') {
+        // One readable progress line per call (`$ echo …`, `read foo.lua`);
+        // `tool_result` is deliberately not a progress line — one line per call.
+        out.progress.push(describeToolUse(ev));
       } else if (ev.type === 'result') {
         if (ev.session_id) out.session = ev.session_id;
         const final = typeof ev.text === 'string' && ev.text !== '' ? ev.text : text;

@@ -115,29 +115,30 @@ Maps the three observed event types onto what `bridge.js` expects
   continuity is established.**
 - `type: 'text'` → reply text. These arrive as **chunks** that build the reply ("**" + "BAN"
   + "ANA" + …), so the parser *accumulates* them rather than latest-wins. (Measured 2026-09-24.)
-  Progress line: `tool_use`/`tool_result` events appear when the agent calls tools; neither
-  maps to a progress line here, so `progress` stays empty — honest: the stream gives no
-  readable per-step text. That is a known limitation of this integration; the bridge shows
-  elapsed time instead of fake progress.
+- `type: 'tool_use'` → one readable progress line per call, via `describeToolUse`
+  (Hermes's names were added there in 2026-09-24): `terminal` → `$ echo WHISPERSTONE_TOOLTEST`,
+  `read_file` → `read foo.lua`, `write_file`/`patch` → `write`/`edit <file>`, `search_files`,
+  `web_search`, `web_extract`; an unknown name degrades to its bare name (e.g. `fact_store`).
+  `type: 'tool_result'` is deliberately **not** a progress line — one line per call, not per
+  result.
 - `type: 'result'` → `session` if present; authoritative for `done`: `text = ev.text`,
   `error = ev.exit_code !== 0`; if `type: 'error'`, `done = { text: <message>, error: true }`.
 
 ## Known limitations, stated up front
 
-1. **No live progress *yet* — but the raw material exists.** Corrected 2026-09-24 after
-   measurement: Hermes's stream-json **does** emit `tool_use` (name + input) and
-   `tool_result` (output + duration) whenever the model calls a tool. My original claim here
+1. **No live progress *yet* → implemented 2026-09-24 (card t_92247e8b).** Original claim here
    — "carries no tool events" — was wrong, inferred from a single PONG probe that happened
    to call no tools. A live forcing run produced:
    ```json
    {"type":"tool_use","name":"terminal","input":{"command":"echo WHISPERSTONE_TOOLTEST"}}
    {"type":"tool_result","name":"terminal","output":"{\"output\": \"WHISPERSTONE_TOOLTEST\", ...}","duration_ms":122,"is_error":false}
    ```
-   So the fix is **adapter-side, not Hermes-side**: the parser can map `tool_use` onto
-   `describeToolUse()` in `bridge/protocol.js`. Caveat that keeps this honest —
-   `describeToolUse` is keyed to **Claude's** tool names (`Bash`, `Read`, `Edit`), so Hermes's
-   names (`terminal`, `read_file`, …) currently fall through to a bare `"terminal"`. A small
-   name-map is needed for readable lines like `$ echo …`. Tracked as a follow-up card.
+   The fix was **adapter-side, not Hermes-side**: `hermesParser` now emits one readable
+   progress line per `tool_use` via `describeToolUse`, whose table gained Hermes's names
+   (`terminal`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`,
+   `web_extract`) alongside Claude's; unknown names degrade to the bare tool name.
+   `tool_result` stays silent so each call is one line, not two. Previously "a small
+   name-map is needed … tracked as a follow-up card" — that follow-up is this.
 2. **This machine has no `claude`/`codex`**, so those entries will report not-installed. The
    fork's default agent should be set to `hermes` in `bridge/config.json` for this install,
    or the in-game default chat will get an error reply.
