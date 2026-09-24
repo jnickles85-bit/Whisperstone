@@ -30,7 +30,13 @@ console.log(execFileSync(process.execPath, ['install-slots.js'], { cwd: S, encod
 
 const env = { ...process.env }; delete env.CLAUDECODE;
 console.log(`agent: ${agent}`);
-const r = spawnSync(process.execPath, ['bridge.js', '--inject', 'Reply with exactly the word PONG and nothing else.', '--agent', agent], { cwd: S, encoding: 'utf8', env, timeout: 180000 });
+// A tool-forcing prompt on purpose: the heartbeat assertion below (act/ > 40B)
+// is only reachable if the run emits at least one progress line, and this
+// bridge emits progress only on real tool calls (hermesParser + pushProgress →
+// beat). A tool-less reply is correct product behaviour and would leave
+// act/001/01.wav at 0 bytes — the assertion would then test nothing.
+const PROMPT = 'Run the shell command `echo BEATTEST` and then reply with exactly the word PONG and nothing else.';
+const r = spawnSync(process.execPath, ['bridge.js', '--inject', PROMPT, '--agent', agent], { cwd: S, encoding: 'utf8', env, timeout: 180000 });
 console.log(r.stdout.split('\n').filter(l => l.includes('#1')).join('\n'));
 if (r.stderr.trim()) console.log('stderr:', r.stderr.trim().slice(0, 500));
 
