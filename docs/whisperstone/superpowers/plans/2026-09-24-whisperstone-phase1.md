@@ -1,7 +1,9 @@
 # Whisperstone Phase 1 (Echo) Implementation Plan
 
 > **For agentic workers:** This plan is executed through the Hermes **Kanban** board, not
-> superpowers subagent dispatch. Each task below becomes one card assigned to `neo`, one
+> **SUPERSEDED 2026-09-24 — design record only, do not execute.** This plan describes the abandoned reload-path design; the project was pivoted to forking `chelinho139/wow-ai`. Retained because the codec work was verified and the reasoning is useful history.
+>
+> superpowers subagent dispatch. Each task below becomes one card assigned to `d4`, one
 > acceptance criterion per card, with the addon files serialized (never two cards editing
 > the addon at once). Steps use checkbox (`- [ ]`) syntax for tracking.
 
