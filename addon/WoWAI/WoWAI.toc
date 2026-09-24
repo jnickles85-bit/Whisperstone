@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: WoW AI
+## Notes: Talk to Claude Code, Codex or Grok from inside the game, one session per chat. Needs the companion bridge (see README).
+## Author: chelinho139
+## Version: 0.3.0
+## SavedVariables: WoWAIDB
+
+Codec.lua
+Inbox.lua
+WoWAI.lua
