@@ -1,6 +1,6 @@
 # Agents
 
-The bridge can drive three coding agents: Claude Code, OpenAI Codex and xAI's Grok Build. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
+The bridge can drive four coding agents: Claude Code, OpenAI Codex, xAI's Grok Build and Hermes Agent (as **Ara**). This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
 
 ## Choosing one
 
@@ -54,11 +54,21 @@ How each one finds its executable on Windows: a configured `path`; else the inst
 - **Progress:** `tool_call` events by their `toolName` (`run_terminal_command` → `$ npm test`, `read_file` → `read main.rs`, `write`/`search_replace` → `edit b.lua`, `grep`, `list_dir` → `ls src`, `web_search`, `web_fetch`, `spawn_subagent` → `agent: …`; anything else by its ACP `kind`, then its name), `thought` chunks as one `~ …` line, and each stretch of `text` before a tool call as a snippet. The reply is the text streamed after the last tool call (or the last text there was, when the turn ends on a tool call). A `stopReason` other than `end_turn` is noted in the reply.
 - **Context:** the game context and primer go in with `--append-system-prompt` (Grok accepts Claude Code's flag names), on every run. Grok also reads `AGENTS.md`, `CLAUDE.md` and `.grok/rules/` in the chat's folder on its own.
 
+## Hermes Agent (Ara)
+
+- **Install:** [Hermes Agent](https://hermes-agent.nousresearch.com/docs). `~/.local/bin/hermes` on POSIX, `~/.local/bin/hermes.exe` on Windows. Run `hermes chat` once by hand and log in.
+- **Command line:** `hermes chat --query-file - --format stream-json -Q --source tool --no-restore-cwd --in <folder> --max-turns <n> [-m <model>] [--resume <session>]`, prompt on stdin. `--query-file -` means nothing shell-interpreted — quotes, `$(…)`, backticks preserved verbatim — and `-Q` is silent, machine-only output. `--source tool` keeps game sessions out of user's session listings.
+- **Permissions:** Hermes has no per-tool allowlist; it manages permission internally. `permissionMode` is therefore ignored by the adapter (see [CONFIGURATION.md](CONFIGURATION.md)) and all `allowedTools`/`deniedTools` are ignored.
+- **Session:** the `session_id` on the `system`/`init` event; later runs pass `--resume <id>`. Hermes stores sessions per folder (with `--in`). **Verified live (2026-09-24):** resuming a prior turn's id answers with full knowledge of that earlier turn (the BANANA test) — context carries, the session design is sound.
+- **Progress:** `text` events are the reply, streamed as chunks (the parser accumulates them). `tool_use`/`tool_result` events DO appear on the stream whenever the model calls a tool (measured 2026-09-24), but neither maps to a readable per-step progress line, so an empty `progress` is what the bridge shows — elapsed time, not fake lines. **Known limitation of this agent:** unlike Claude/Codex/Grok, no live tool progress; richer tool-event payloads would need a Hermes-side change, not an adapter workaround.
+- **Context:** Hermes has no `--append-system-prompt` flag, so the bridge uses Codex's pattern: the game context and primer ride at the top of the prompt in `[Context from the WoW AI bridge…]` block. Full context for a new session; short context (primer already in the thread) for one that resumes.
+- **Primer:** `agents.hermes.primerFile` in `config.json` (per-agent) overrides the global `primerFile` for this agent only. This is how Ara gets to read `docs/WOAI-WOWAI-ADDON.md` (a Whisperstone primer) without changing what the other three agents see.
+
 ## Known limits
 
 - One agent CLI can only be as headless as it is. If an agent hangs waiting for something interactive (a first-run login, an update prompt), the run ends when `timeoutMs` (30 minutes) expires; run the CLI by hand once on the bridge PC to get past it.
-- The **Allow** button needs the agent to report what it refused. Claude always does; Grok marks the refused call `failed` with a "was not executed" line, which the bridge reads; Codex says it in its own words and has no rule to add anyway.
-- The bridge's own transcript (`bridge/transcripts.json`) and the addon's history record which agent wrote each reply, so a restored chat keeps its labels. Chats saved before agents existed show their replies as Claude's.
+- **Hermes (Ara) shows no *readable* live progress** for tool calls — the stream carries `text` (the reply), `system`/`result`, and, once a tool is called, `tool_use`/`tool_result`; none of those map to a human progress line, so in-game it shows elapsed time, not `$ npm test`-style steps. That's a Hermes-side gap (richer tool-event payloads), not an adapter one.
+- **Hermes `--resume`**: verified 2026-09-24 — a resumed session carries the prior turn's context (BANANA test, session `20260924_154831_d38c82`). This was the one CLI-side question this card existed to settle.
 - Codex and Grok were tested live against codex 0.156.1 and Grok Build 1.0.41 (the inject test, plus captured streams in `tests/agents_test.js`). Unknown event types are ignored; a stream that ends without a result is reported as an error with the exit code and the tail of stderr.
 
 ## Trying one without the game

@@ -356,10 +356,16 @@ function gameContext() {
 // it off. Relative paths are taken from the repo (docs/WOW-ADDON-PRIMER.md).
 const PRIMER_FILE = cfg.primerFile === undefined ? 'docs/WOW-ADDON-PRIMER.md' : cfg.primerFile;
 let warnedNoPrimer = false;
-function primer() {
-  if (!PRIMER_FILE) return '';
-  const file = path.resolve(REPO, PRIMER_FILE);
+// agents.<id>.primerFile in config.json overrides the global primer for that
+// agent (e.g. hermes gets a Whisperstone primer); empty string turns it off.
+function primer(override) {
+  let file = override === undefined || override === null ? PRIMER_FILE : override;
+  if (!file) return '';
+  file = path.resolve(REPO, file);
   try { return fs.readFileSync(file, 'utf8'); } catch (e) {
+    // An explicit per-agent primer that cannot be read is the user's choice,
+    // not a fallback to the global one.
+    if (override !== undefined && override !== null && override !== '') return '';
     if (!warnedNoPrimer) { warnedNoPrimer = true; log(`primer: cannot read ${file} (${e.code || e.message}); running without it`); }
     return '';
   }
@@ -490,7 +496,7 @@ function runJob(job) {
   const resume = state.sessions[skey] || state.sessions[key];
 
   const ctx = gameContext();
-  const system = P.systemPrompt(ctx, primer());
+  const system = P.systemPrompt(ctx, primer(acfg.primerFile)); // agents.<id>.primerFile overrides the global
   const systemShort = P.systemPrompt(ctx, '');
   const promptFile = path.join(TMP_DIR, `prompt-${job.id}-${Date.now().toString(36)}.txt`);
   const input = agent.input({ prompt: job.text, system, systemShort, resume });

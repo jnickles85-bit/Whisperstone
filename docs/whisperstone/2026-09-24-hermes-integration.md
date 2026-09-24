@@ -41,16 +41,23 @@ the reload-per-message design was abandoned.
 - `hermes` is installed here; `claude` and `codex` are **not**. So on this machine the fork's
   other three agents will report as not-installed, and `hermes` is the one that works.
 
-### Unverified — must be measured, not assumed
+### Measured 2026-09-24 — was "Unverified, must be measured, not assumed"
 
-- **Whether `--resume` combined with `--query-file -` behaves as a continuing conversation.**
-  A fresh session per message would work but be poor (no continuity, no memory of the last
-  thing you said in-game). Task 4 of the plan is exactly this measurement.
-- Whether a resumed session's recorded cwd interacts badly with the chat's folder. Mitigated
-  by always passing `--no-restore-cwd`; confirm in the same test.
-- Hermes's own tool-approval prompts in a headless/pipe context. A prompt with no TTY will
-  hang until `timeoutMs`. If it happens, the answer is a permissive setting in the *config*,
-  not `--yolo` sprinkled into argv.
+- **`--resume` combined with `--query-file -` IS a continuing conversation.**
+  Measured: fresh run (session `20260924_154831_d38c82`) told to remember BANANA; resumed run
+  with the same id and `--query-file -` answered "**BANANA** — you asked me to remember it just
+  a moment ago … two messages back in this same conversation". Context carries. The design
+  (pass `--resume <id>` on later turns) is valid.
+- **Tool events DO appear on the stream** (`tool_use`/`tool_result`) whenever the agent calls
+  tools — see the resume capture above. The old PONG capture happened to have none because the
+  model answered without tools. Parsers must still *tolerate* them (unknown-event ignoring);
+  they can't be assumed absent.
+- A resumed session's cwd: run with `--no-restore-cwd --in <chat-folder>` and it stayed in the
+  chat folder (both turns used the same `--in` value). The recorded-cwd interaction noted
+  below did not bite, but the always-pass `--no-restore-cwd` stays as insurance.
+- Headless tool-approval: the measured runs (one tool call each) never hung on an approval
+  prompt, and `timeoutMs` bounds the risk. If it happens, the answer is a permissive setting
+  in the *config*, not `--yolo` sprinkled into argv.
 
 ## The adapter contract
 
@@ -106,10 +113,12 @@ Maps the three observed event types onto what `bridge.js` expects
 
 - `type: 'system'`, `subtype: 'init'` → `session = ev.session_id`. **This is how resume
   continuity is established.**
-- `type: 'text'` → `done = { text: ev.text, error: false }` (latest wins). No progress line:
-  Hermes's `--format stream-json` does not emit per-tool events, so there is nothing to
-  report mid-run. That is a known limitation of this integration, and the honest thing is to
-  document it rather than fake progress.
+- `type: 'text'` → reply text. These arrive as **chunks** that build the reply ("**" + "BAN"
+  + "ANA" + …), so the parser *accumulates* them rather than latest-wins. (Measured 2026-09-24.)
+  Progress line: `tool_use`/`tool_result` events appear when the agent calls tools; neither
+  maps to a progress line here, so `progress` stays empty — honest: the stream gives no
+  readable per-step text. That is a known limitation of this integration; the bridge shows
+  elapsed time instead of fake progress.
 - `type: 'result'` → `session` if present; authoritative for `done`: `text = ev.text`,
   `error = ev.exit_code !== 0`; if `type: 'error'`, `done = { text: <message>, error: true }`.
 
@@ -119,7 +128,11 @@ Maps the three observed event types onto what `bridge.js` expects
    while a run is in flight. Hermes's stream-json carries no tool events, so an in-game
    "working…" will show elapsed time and nothing else. Adding it would mean a Hermes-side
    change (emit tool events on the stream), not an adapter workaround.
-2. **`--resume` semantics unverified** (above).
+2. **No readable live progress.** The Claude/Grok parsers show `$ npm test`, `edit file.lua`
+   and so on while a run is in flight. Hermes's stream-json carries `tool_use`/`tool_result`
+   when tools are called, but nothing maps to a human progress line, so an in-game
+   "working…" will show elapsed time and nothing else. Adding it would mean a Hermes-side
+   change (richer tool-event payloads), not an adapter workaround.
 3. **This machine has no `claude`/`codex`**, so those entries will report not-installed. The
    fork's default agent should be set to `hermes` in `bridge/config.json` for this install,
    or the in-game default chat will get an error reply.

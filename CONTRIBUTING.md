@@ -48,7 +48,7 @@ To try changes in the game, run `node setup.js` (it re-copies the addon into `In
 | `node --test tests/agents_test.js` | `bridge/agents.js`: the command line built for each agent and permission mode, the prompt delivery (stdin, prompt file, context block), a sample of each CLI's real stream (Claude stream-json, Codex `exec --json`, Grok streaming-json) read back into progress lines, session id, denials and reply, and the unwrapping of npm's Windows launchers. |
 | `node --test tests/restore_test.js` | Slot files are valid Lua and read back field by field, including a restore bundle. |
 | `node tests/codec_test.js` | `Codec.lua` in a Lua VM, rendered to PNG with noise and gamma, decoded by `capture.ps1`. Writes scratch images to `tests/tmp/` (gitignored). |
-| `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex` or `-- --agent grok` for the others. Needs that CLI installed and logged in. |
+| `npm run test:live` | Not part of `npm test`. Builds a sandbox under `tests/tmp/inject/` with a 5-slot pool and runs the bridge with `--inject` against a real agent CLI: Claude by default, `-- --agent codex`, `-- --agent grok` or `-- --agent hermes` for the others. Needs that CLI installed and logged in. |
 
 When you change behaviour, add or extend a test in the matching file. Pure logic belongs in `protocol.js` where `bridge_test.js` can reach it without spawning anything.
 

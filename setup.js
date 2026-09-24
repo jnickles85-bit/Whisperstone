@@ -104,7 +104,7 @@ function copyAddon(client) {
 
 // A config.json from before the rename, or from before agents: fix the paths
 // that named the old addon, and move Claude's settings under agents.claude next
-// to the codex and grok blocks from the example. Everything else is kept.
+// next to the codex, grok and hermes blocks from the example. Everything else is kept.
 function upgradeConfig(cfg, example) {
   const notes = [];
   if (/WoWClaude/.test(cfg.inboxFile || '')) {
@@ -122,7 +122,7 @@ function upgradeConfig(cfg, example) {
     if (cfg.permissionMode) claude.permissionMode = cfg.permissionMode;
     if (Array.isArray(cfg.allowedTools)) claude.allowedTools = cfg.allowedTools;
     cfg.agent = cfg.agent || example.agent;
-    cfg.agents = { claude, codex: { ...example.agents.codex }, grok: { ...example.agents.grok } };
+    cfg.agents = { claude, codex: { ...example.agents.codex }, grok: { ...example.agents.grok }, hermes: { ...example.agents.hermes } };
     for (const k of ['claudePath', 'model', 'permissionMode', 'allowedTools']) delete cfg[k];
     notes.push('agents');
   }

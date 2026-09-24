@@ -6,6 +6,7 @@
 //   claude  Claude Code   `claude -p --output-format stream-json`, prompt on stdin
 //   codex   OpenAI Codex  `codex exec --json`, prompt on stdin
 //   grok    xAI Grok      `grok --prompt-file … --output-format streaming-json`
+//   hermes  Hermes Agent  `hermes chat --query-file - --format stream-json -Q`, prompt on stdin
 //
 // Everything is pure (no I/O) except resolveCommand, which looks for the
 // executable on disk. Adding an agent: an entry in AGENTS (args, input, parser,
@@ -277,6 +278,38 @@ function grokParser() {
 }
 
 // ---------------------------------------------------------------------------
+// Hermes Agent
+// ---------------------------------------------------------------------------
+
+// Hermes `chat --format stream-json` emits newline-delimited JSON. Measured
+// shapes: a `system`/init with the session id, `text` events that may arrive
+// as one line (a short reply) or as a stream of chunks (a longer one, or when
+// the model calls tools — `tool_use`/`tool_result` interleave and are ignored
+// here; there is no tool progress to surface), and the authoritative
+// `result` (its text and exit code win over the accumulated stream).
+function hermesParser() {
+  let text = ''; // the reply as its `text` events have built it up
+  return {
+    feed(ev) {
+      const out = empty();
+      if (ev.type === 'system' && ev.subtype === 'init') {
+        if (ev.session_id) out.session = ev.session_id;
+      } else if (ev.type === 'text' && typeof ev.text === 'string') {
+        text += ev.text;
+        out.done = { text, error: false };
+      } else if (ev.type === 'result') {
+        if (ev.session_id) out.session = ev.session_id;
+        const final = typeof ev.text === 'string' && ev.text !== '' ? ev.text : text;
+        out.done = { text: final, error: ev.exit_code !== 0 };
+      } else if (ev.type === 'error') {
+        out.done = { text: String(ev.message || ev.error || 'Hermes reported an error'), error: true };
+      }
+      return out;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The table
 // ---------------------------------------------------------------------------
 
@@ -371,6 +404,35 @@ const AGENTS = {
     input: ({ prompt }) => ({ promptFile: prompt }),
     env: (env) => { env.GROK_DISABLE_AUTOUPDATER = '1'; return env; },
     parser: grokParser,
+  },
+  hermes: {
+    name: 'Ara',
+    command: 'hermes',
+    install: 'Hermes Agent: https://hermes-agent.nousresearch.com/docs, then run `hermes chat` once and log in',
+    windowsPaths: () => [path.join(os.homedir(), '.local', 'bin', 'hermes.exe')],
+    posixPaths: () => [path.join(os.homedir(), '.local', 'bin', 'hermes')],
+    args({ cfg, resume, cwd }) {
+      const a = [
+        'chat',
+        '--query-file', '-',                     // prompt on stdin, nothing shell-interpreted
+        '--format', 'stream-json', '-Q',
+        '--source', 'tool',                      // keep game sessions out of user session lists
+        '--no-restore-cwd', '--in', cwd,         // the chat's folder is authoritative
+        '--max-turns', String(cfg.maxTurns || 20),
+      ];
+      const extra = Array.isArray(cfg.extraArgs) ? cfg.extraArgs : [];
+      if (cfg.model) a.push('-m', cfg.model);
+      if (resume) a.push('--resume', resume);
+      return a.concat(extra);
+    },
+    input: ({ prompt, system, systemShort, resume }) => {
+      // No system-prompt flag: Codex's pattern, context block on top of the
+      // prompt, full for a new session, short context-only on a resumed one.
+      const ctx = resume ? systemShort : system;
+      return { stdin: (ctx ? contextBlock(ctx) : '') + prompt };
+    },
+    env: (env) => env,
+    parser: hermesParser,
   },
 };
 
@@ -483,6 +545,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

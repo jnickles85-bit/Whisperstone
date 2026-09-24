@@ -99,10 +99,10 @@ local function ChatFolder(c)
 	return run.bridgeCwd or ""
 end
 
--- Agents are named by id as the bridge knows them ("claude", "codex", "grok");
+-- Agents are named by id as the bridge knows them ("claude", "codex", "grok", "hermes");
 -- the bridge lists the ones it has, and its default, in every slot file. A chat
 -- with no agent of its own runs on the bridge's default.
-local AGENT_NAMES = { claude = "Claude", codex = "Codex", grok = "Grok" }
+local AGENT_NAMES = { claude = "Claude", codex = "Codex", grok = "Grok", hermes = "Ara" }
 
 local function AgentName(id)
 	id = tostring(id or "")

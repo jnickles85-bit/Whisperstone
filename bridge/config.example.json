@@ -65,6 +65,13 @@
       ],
       "deniedTools": [],
       "extraArgs": []
+    },
+    "hermes": {
+      "path": "",
+      "model": "",
+      "maxTurns": 20,
+      "primerFile": "",
+      "extraArgs": []
     }
   },
   "gameContext": true,

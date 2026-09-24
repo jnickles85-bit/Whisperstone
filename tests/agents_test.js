@@ -14,11 +14,12 @@ const A = require('../bridge/agents');
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
 test('agent ids, display names and the legacy Claude config keys', () => {
-  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok']);
+  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'hermes']);
   assert.equal(A.normalizeAgent(' Codex '), 'codex');
   assert.equal(A.normalizeAgent('gemini'), null);
   assert.equal(A.normalizeAgent(''), null);
   assert.equal(A.displayName('grok'), 'Grok');
+  assert.equal(A.displayName('hermes'), 'Ara');
   assert.equal(A.displayName(''), 'AI');
   // Claude's settings from before "agents" existed still count, under anything in agents.claude.
   const legacy = { claudePath: 'C:\\c.exe', model: 'opus', permissionMode: 'default', allowedTools: ['WebSearch'] };
@@ -84,6 +85,56 @@ test('Grok: streaming-json from a prompt file, dontAsk plus translated allow rul
   assert.deepEqual(A.grokRules('Bash(npm test)'), ['Bash(npm test)']);
   assert.deepEqual(A.grokRules('WebSearch'), ['WebSearch']);
   assert.deepEqual(A.grokRules(''), []);
+});
+
+test('Hermes: stream-json from stdin, no --yolo, model and resume in place, prompt with the context on top', () => {
+  const fresh = A.AGENTS.hermes.args({ cfg: {}, cwd: '/tmp', resume: null, system: SYS, systemShort: '' });
+  assert.deepEqual(fresh, ['chat', '--query-file', '-', '--format', 'stream-json', '-Q',
+    '--source', 'tool', '--no-restore-cwd', '--in', '/tmp', '--max-turns', '20']);
+  assert.ok(!fresh.includes('--yolo'), 'no --yolo in argv');
+  const resume = A.AGENTS.hermes.args({ cfg: { maxTurns: 40, model: 'm1' }, cwd: 'C:\\proj', resume: '20260924_153640_4dbe00', system: SYS, systemShort: '' });
+  assert.deepEqual(resume, ['chat', '--query-file', '-', '--format', 'stream-json', '-Q',
+    '--source', 'tool', '--no-restore-cwd', '--in', 'C:\\proj', '--max-turns', '40',
+    '-m', 'm1', '--resume', '20260924_153640_4dbe00']);
+  // extraArgs stay at the tail, after model and resume.
+  const extra = A.AGENTS.hermes.args({ cfg: { extraArgs: ['--accept-hooks'] }, cwd: '/tmp', resume: 's1', system: '' });
+  assert.deepEqual(extra.slice(-2), ['s1', '--accept-hooks']);
+  assert.ok(extra.indexOf('--accept-hooks') > extra.indexOf('--resume'));
+  // No system-prompt flag: Codex's pattern, full block for a new session, short on a resumed one.
+  assert.equal(A.AGENTS.hermes.input({ prompt: 'hi', system: 'FULL', systemShort: 'SHORT', resume: '' }).stdin, A.contextBlock('FULL') + 'hi');
+  assert.equal(A.AGENTS.hermes.input({ prompt: 'hi', system: 'FULL', systemShort: 'SHORT', resume: 's1' }).stdin, A.contextBlock('SHORT') + 'hi');
+  assert.equal(A.AGENTS.hermes.input({ prompt: 'hi', system: '', systemShort: '', resume: '' }).stdin, 'hi');
+  assert.equal(A.AGENTS.hermes.env({ PATH: 'x' }).PATH, 'x');
+});
+
+test('Hermes stream: the captured init/text/result triple gives the session id, an empty progress, and the authoritative reply', () => {
+  // Verbatim from docs/whisperstone/2026-09-24-hermes-integration.md (live capture; `tokens` elided).
+  const lines = [
+    '{"type":"system","subtype":"init","model":"deepseek-v4.1-flash","session_id":"20260924_153640_4dbe00","timestamp":1790278600489}',
+    '{"type":"text","text":"PONG","timestamp":1790278611363}',
+    '{"type":"result","session_id":"20260924_153640_4dbe00","exit_code":0,"text":"PONG","tokens":{"in":1,"out":1},"duration_ms":10957,"timestamp":1790278611447}',
+  ].map(l => JSON.parse(l));
+  const p = A.hermesParser();
+  const out = lines.map(l => p.feed(l));
+  assert.equal(out[0].session, '20260924_153640_4dbe00');
+  assert.deepEqual(out[0].progress, []);
+  assert.equal(out[0].done, undefined);
+  assert.deepEqual(out[1].done, { text: 'PONG', error: false });
+  assert.equal(out[2].session, '20260924_153640_4dbe00');
+  assert.deepEqual(out[2].done, { text: 'PONG', error: false });
+  assert.deepEqual(out[2].notes, []);
+  // A nonzero exit code is an error even with text.
+  assert.deepEqual(A.hermesParser().feed({ type: 'result', session_id: 's', exit_code: 1, text: 'stopped at turn 20' }).done, { text: 'stopped at turn 20', error: true });
+  // A text-less result falls back to the reply its stream carried (real stream: a
+  // reply can arrive as chunks — "Got", " it", … — with no text on the result).
+  const c = A.hermesParser();
+  c.feed({ type: 'text', text: 'Got' });
+  c.feed({ type: 'text', text: ' it.' });
+  assert.deepEqual(c.feed({ type: 'result', session_id: 's', exit_code: 0 }).done, { text: 'Got it.', error: false });
+  // A stream error ends the run; unknown event types are ignored (tool_use, usage, …).
+  assert.deepEqual(A.hermesParser().feed({ type: 'error', message: 'not logged in' }).done, { text: 'not logged in', error: true });
+  assert.deepEqual(A.hermesParser().feed({ type: 'tool_use', name: 'fact_store', input: {} }).done, undefined);
+  assert.deepEqual(A.hermesParser().feed({ type: 'usage', tokens: {} }).done, undefined);
 });
 
 test('Claude stream: tool calls and text become progress, the result carries the reply and any denials', () => {
