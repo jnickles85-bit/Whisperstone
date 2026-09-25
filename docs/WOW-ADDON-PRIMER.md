@@ -9,6 +9,15 @@ Read by the wow-ai bridge and appended to the agent's system prompt on every run
 - Use the modern `C_` namespaces; many old globals are gone or only exist as temporary shims: `C_Item.GetItemInfo` (not `GetItemInfo`), `C_Spell.GetSpellInfo` / `C_Spell.GetSpellCooldown` (return tables, not multiple values), `C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL")` (not `UnitBuff`), `C_Container.GetContainerNumSlots` / `GetContainerItemInfo` (returns a table), `C_AddOns`, `C_Timer`, `C_Map`. Write a fallback only if you have confirmed the old name exists: `local f = (C_Item and C_Item.GetItemInfo) or GetItemInfo`. Skill lines are namespaced too: there is no bare `GetNumSkillLines` / `GetSkillLineInfo`, and `C_SkillInfo.GetSkillLineInfo(index)` returns one `SkillLineAttributes` table (fields `name`, `isHeader`, `rank`, `maxRank`, `skillLineCategoryID`, …), not positional values. For a character's trained professions use `GetProfessions()` (one skill-line index per slot, `nil` where a slot is empty) and `GetProfessionInfo(index)`. Talents are a namespace too, and there is **no tab loop**: `GetNumTalentTabs` appears nowhere in this client, and `GetTalentTabInfo` / `GetTalentInfo` are defined only by `Blizzard_DeprecatedSpecialization`, whose `.toc` carries `## AllowLoadGameType: classic, standard` — so that addon never loads on Forever and neither shim exists in game. Use `C_SpecializationInfo.GetSpecialization()` (the one active spec's index) then `C_SpecializationInfo.GetSpecializationInfo(specIndex)` → `specId, name, description, icon, role, primaryStat, pointsSpent, …`, exactly as Blizzard's own Camelot `PaperDollFrame.lua:498,504` does.
 - Beta quirk: the client sometimes wipes addon SavedVariables. Do not keep anything irreplaceable only there.
 
+## Reading the game context the bridge hands you
+
+A few `Key: value` lines about the character sit at the top of your prompt.
+
+- `Stats: HP 1450, Mana 820, Armor 512, Str 68, ...` — effective sheet totals. A field can be **absent rather than 0** (secret on some maps), so never read a missing one as 0.
+- `Gear: 7 of 19 slots filled (12 empty)` — a **count, not a list**: nothing about which item is where. For "is this an upgrade?" ask them to shift-click what they wear.
+- `Talents:` / `Professions:` absent is legitimate, not a bug.
+- The block is capped and skipped when it will not fit beside a long message — then you read the previous one. `Position:` is the freshness clue.
+
 ## Addon layout
 
 - `Interface\AddOns\<Name>\<Name>.toc` lists the files, in load order:

@@ -944,6 +944,40 @@ local function Money(copper)
 	return c .. "c"
 end
 
+-- A number the client may refuse to show us. Every read below is one of Forever's
+-- secret-returning unit functions, though not all under the same predicate
+-- (Blizzard_APIDocumentationGenerated/UnitDocumentation.lua): UnitStat (:3200) and UnitArmor
+-- (:647) carry SecretWhenUnitStatsRestricted -- eleven functions in all, at :337,647,666,684,
+-- 1049,1071,2946,2964,3134,3200,3427 -- while UnitHealthMax (:1472) carries
+-- SecretWhenUnitHealthMaxRestricted and UnitPowerMax (:2801) SecretWhenUnitPowerMaxRestricted.
+-- The predicate is SecretOnRestrictedMaps (SecretPredicatesDocumentation.lua:70: "produce secret
+-- values when the player is on an addon-restricted map such as a dungeon or raid"). Whatever the
+-- flag, the consequence is the same: such a read hands back a *secret* value -- type() still
+-- answers "number", but any arithmetic or comparison on it is an immediate Lua error, and
+-- interpolating it into the context text is at best noise. So the gate below serves all of them,
+-- not just the stats pair.
+--
+-- Plain() is the one gate: anything that is not provably a plain number becomes nil, and nil
+-- means UNKNOWN, so the caller leaves the field out. Deliberately never `or 0` -- a fabricated
+-- zero is worse than an absent field, because the agent reasons on it.
+--
+-- issecretvalue is a real global on this client (FrameScriptDocumentation.lua:287, "Returns true
+-- if a supplied value is a secret value") but absent on the older family, so it is reached
+-- through _G and its own result is pcall'd: asking it is the sanctioned test, and it must not be
+-- the thing that breaks the line.
+local function Secret(v)
+	local isSecret = _G.issecretvalue
+	if type(isSecret) ~= "function" then return false end
+	local ok, secret = pcall(isSecret, v)
+	return (ok and secret) and true or false
+end
+
+local function Plain(v)
+	if type(v) ~= "number" then return nil end
+	if Secret(v) then return nil end
+	return v
+end
+
 -- A few lines about the game and the character, as the bridge will show them to the agent.
 function WoWAI.GameContext()
 	local lines = {}
@@ -1009,6 +1043,90 @@ function WoWAI.GameContext()
 		table.insert(progress, "XP: " .. xp .. "/" .. xpMax)
 	end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
+
+	-- Stats and gear, the two lines this card exists to add. They are deliberately placed HERE
+	-- rather than at the end of the block, because the append order is also the truncation order:
+	-- WoWAI.lua cuts the tail with no marker, so whatever is appended last dies first. Placed
+	-- here, a block that overflows loses the Talents/Professions lines -- each of which is
+	-- legitimately absent for a low-level character anyway -- rather than the gear data the agent
+	-- needs to give gear advice.
+	--
+	-- Compact totals, never an itemised list: a generated 16-slot listing measures 437 bytes on
+	-- this same harness (docs/whisperstone/phase-b-l2-scoping.md §5.3), which would not fit beside
+	-- a real message. Item names belong on the host-side SavedVariables lane, a later card.
+	--
+	-- No timestamp, and that is a measured choice rather than an oversight (§6 trap 1): the
+	-- context only rides a record when it differs from the last one the bridge acknowledged
+	-- (ContextToSend, below), so a stamp that moves every minute would make the block be resent on
+	-- every single message instead of only when something actually changed -- a cost the current
+	-- block does not pay. See the card's handoff for the measurement.
+	local sheet = {}
+	local hp = Plain(Try(UnitHealthMax, "player"))
+	if hp then table.insert(sheet, "HP " .. hp) end
+	local powerType, powerToken = Try(UnitPowerType, "player")
+	powerType = Plain(powerType)
+	if powerType then
+		local power = Plain(Try(UnitPowerMax, "player", powerType))
+		if power then
+			-- The display name comes from the token, exactly as Blizzard's own character sheet
+			-- takes it (Camelot/PaperDollFrame.lua:651: `_G[powerToken]`). A token the client
+			-- gives us but the locale data does not name falls back to the token itself.
+			local label = type(powerToken) == "string" and _G[powerToken]
+			if type(label) ~= "string" or label == "" then label = type(powerToken) == "string" and powerToken or "Power" end
+			table.insert(sheet, label .. " " .. power)
+		end
+	end
+	-- UnitArmor returns base, effective, real, bonus; the sheet shows the effective half
+	-- (Camelot/PaperDollFrameStats.lua:460-461).
+	local _, armor = Try(UnitArmor, "player")
+	armor = Plain(armor)
+	if armor then table.insert(sheet, "Armor " .. armor) end
+	-- UnitStat(unit, index) returns currentStat, effectiveStat, posBuff, negBuff; the sheet uses
+	-- the effective one (Camelot/PaperDollFrame.lua:694). Index 1..5 is str, agi, sta, int, spi
+	-- (Blizzard names them through SPELL_STAT<i>_NAME, Camelot/PaperDollFrame.lua:697).
+	local statNames = { "Str", "Agi", "Sta", "Int", "Spi" }
+	for i = 1, 5 do
+		local _, effective = Try(UnitStat, "player", i)
+		effective = Plain(effective)
+		if effective then table.insert(sheet, statNames[i] .. " " .. effective) end
+	end
+	-- A field the client refused to show us (a secret, per Plain) is simply absent from the line,
+	-- and a sheet with nothing readable yields no line at all. Absence over zeros: the agent
+	-- reasons on a zero it is given, and it cannot reason on a line it is not given.
+	if #sheet > 0 then table.insert(lines, "Stats: " .. table.concat(sheet, ", ")) end
+
+	-- How much of the character is actually wearing something. A count and the number of empty
+	-- slots, because "12 empty slots" is the actionable half of the sentence.
+	--
+	-- GetInventoryItemLink is a BARE global on Forever -- 15 call sites tree-wide, none namespaced,
+	-- e.g. Camelot/PaperDollFrame.lua:2140 -- while the bag/bank readers are namespaced
+	-- (C_Container.*). That asymmetry is deliberate and the addon must not assume symmetry.
+	-- Its absence is not "the character is naked": with no reader at all there is no line.
+	--
+	-- The slot range is the client's, not a literal. NUM_INVSLOTS is a global on camelot -- the
+	-- camelot-only character frame walks it unguarded (Camelot/CharacterFrame.lua:38) -- but it is
+	-- not defined by any camelot-loaded Lua file here ([Game]\Constants.lua for camelot holds only
+	-- CLASS_SORT_ORDER; the file that defines INVSLOT_* and NUM_INVSLOTS is
+	-- Blizzard_FrameXMLBase/Constants.lua:136-156, gated [AllowLoadGameType mainline]), so the
+	-- client itself owns the value. 19 is the last resort when even that global is missing, and it
+	-- is the numbering the client uses: INVSLOT_HEAD=1 .. INVSLOT_TABARD=19 (Constants.lua:136-156),
+	-- which the camelot character frame's own slot buttons match -- 20 of them, CharacterAmmoSlot
+	-- (slot 0) plus 1..19 (Camelot/PaperDollFrame.xml). Same 19 StatForge carries
+	-- (SF.EQUIPMENT_SLOTS, Constants.lua:16).
+	if type(_G.GetInventoryItemLink) == "function" then
+		local total = Plain(_G.NUM_INVSLOTS) or Plain(_G.INVSLOT_LAST_EQUIPPED) or 19
+		if total > 0 then
+			local filled = 0
+			for slot = 1, total do
+				-- A slot counts as filled only on a real link string. A nil is an empty slot; a
+				-- return that is neither (a table, or a secret) is not evidence of an item, and
+				-- guessing here would be the same class of mistake as a fabricated stat.
+				local link = Try(_G.GetInventoryItemLink, "player", slot)
+				if type(link) == "string" and link ~= "" then filled = filled + 1 end
+			end
+			table.insert(lines, "Gear: " .. filled .. " of " .. total .. " slots filled (" .. (total - filled) .. " empty)")
+		end
+	end
 
 	-- Talents. The vanilla tab loop that used to live here (GetNumTalentTabs +
 	-- GetTalentTabInfo) was dead code on this client -- silently, because Try() swallows the

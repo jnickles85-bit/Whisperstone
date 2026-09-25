@@ -278,6 +278,76 @@ function GetProfessionInfo(index)
 	local name, rank, maxRank, skillLine = p[1], p[2], p[3], p[4]
 	return name, "Interface\\Icons\\Trade_Skinning", rank, maxRank, 0, 0, skillLine, 0, 0, 0, name
 end
+-- The character sheet and the equipped slots, as Forever exposes them.
+--
+-- UnitHealthMax / UnitPowerType / UnitPowerMax / UnitArmor / UnitStat and GetInventoryItemLink
+-- are all BARE globals here, and that is not an accident of this stub: they are what Blizzard's
+-- own camelot-only code calls -- UnitHealthMax and UnitPowerType and UnitPowerMax at
+-- Blizzard_UIPanels_Game/Camelot/PaperDollFrame.lua:630,648,649, UnitArmor at
+-- Camelot/PaperDollFrameStats.lua:460, UnitStat at Camelot/PaperDollFrame.lua:694, and
+-- GetInventoryItemLink at Camelot/PaperDollFrame.lua:2140 (15 call sites tree-wide, none
+-- namespaced). The bag and bank pair IS namespaced (C_Container.*), so the asymmetry is real
+-- and this harness keeps it: an addon that reaches for C_Item.GetInventoryItemLink finds
+-- nothing here, exactly as in game.
+-- Every name and return list is from Blizzard_APIDocumentationGenerated/UnitDocumentation.lua
+-- (:645 UnitArmor, :1472 UnitHealthMax, :2801 UnitPowerMax, :2859 UnitPowerType, :3198 UnitStat).
+--
+-- Eleven of those documented unit functions carry SecretWhenUnitStatsRestricted -- UnitStat is
+-- one of them, at :3200. UnitHealthMax (:1472) and UnitPowerMax (:2801) are restricted too, but
+-- under their own predicates (SecretWhenUnitHealthMaxRestricted / SecretWhenUnitPowerMaxRestricted),
+-- so a guard written against one named predicate would miss them. STUB.secret stands in for such a
+-- value whichever flag produced it -- it is a NUMBER so that a careless `type(v) == "number"` guard
+-- alone cannot pass this harness, and a harness that cannot produce a secret cannot test what the
+-- addon does with one.
+STUB.secret = -987654
+function issecretvalue(v) return v == STUB.secret end
+-- Level 23 Night Elf Hunter, so the resource bar is Mana (the token is what the client reports;
+-- Blizzard's character sheet looks the display name up as _G[powerToken], Camelot/PaperDollFrame.lua:651).
+MANA = "Mana"
+STUB.powerType, STUB.powerToken = 0, "MANA"
+STUB.healthMax, STUB.armor, STUB.powerMax = 1450, 512, 820
+STUB.stats = { 68, 95, 74, 61, 52 } -- strength, agility, stamina, intellect, spirit
+function UnitHealthMax(unit) if unit == "player" then return STUB.healthMax end end
+function UnitArmor(unit)
+	if unit ~= "player" then return nil end
+	return STUB.armor - 32, STUB.armor, STUB.armor, 32 -- base, effective, real, bonus
+end
+function UnitStat(unit, index)
+	if unit ~= "player" then return nil end
+	local value = STUB.stats[index]
+	if value == nil then return nil end
+	return value, value, 0, 0 -- currentStat, effectiveStat, posBuff, negBuff
+end
+function UnitPowerType(unit)
+	if unit ~= "player" then return nil end
+	return STUB.powerType, STUB.powerToken, 0, 0.5, 1
+end
+function UnitPowerMax(unit, powerType) if unit == "player" then return STUB.powerMax end end
+-- NUM_INVSLOTS is a client global: Blizzard's camelot-only character frame walks it
+-- (Camelot/CharacterFrame.lua:38) and no camelot-loaded Lua file in the Forever tree defines it
+-- ([Game]\Constants.lua holds only CLASS_SORT_ORDER there; the definitions live in
+-- Blizzard_FrameXMLBase/Constants.lua:136-156, gated [AllowLoadGameType mainline]), so the addon
+-- guards it and falls back to the 19 slots INVSLOT_HEAD..INVSLOT_TABARD -- the numbering the
+-- camelot character frame's own 20 slot buttons use (Camelot/PaperDollFrame.xml).
+NUM_INVSLOTS = 19
+-- Seven filled slots, twelve empty: a nil link is an EMPTY slot, not a failure.
+STUB.equipped = {
+	[1] = "|cff9d9d9d|Hitem:100|h[Worn Helm]|h|r",
+	[2] = "|cffffffff|Hitem:120|h[Thick Necklace]|h|r",
+	[5] = "|cff1eff00|Hitem:2140|h[Fine Longsword]|h|r",
+	[6] = "|cffffffff|Hitem:220|h[Loose Belt]|h|r",
+	[7] = "|cff1eff00|Hitem:301|h[Sturdy Leggings]|h|r",
+	[8] = "|cffffffff|Hitem:410|h[Worn Boots]|h|r",
+	[16] = "|cffffffff|Hitem:520|h[Bent Dagger]|h|r",
+}
+function GetInventoryItemLink(unit, slot)
+	if unit ~= "player" then return nil end
+	return STUB.equipped[slot]
+end
+-- The same reader, kept under a second name so a test that has to prove the line's ABSENCE
+-- (by clearing the global, as a client without it would behave) can put it back.
+STUB_EQUIPPED = STUB.equipped
+STUB_GetInventoryItemLink = GetInventoryItemLink
 ITEM_QUALITY2_DESC = "Uncommon"
 C_Item = {
 	GetItemInfo = function(link)

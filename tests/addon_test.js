@@ -135,6 +135,11 @@ test('the game context describes the character and rides on the hello, then only
     'Location: Duskwood - Darkshire',
     'Position: 45.2, 67.8 (map 1431)',
     'Money: 1g 23s 45c; XP: 1234/5000',
+    // Stats and gear are inserted here, ahead of Talents/Professions: the block is truncated
+    // tail-first with no marker, so the lines that must survive an overflow are the ones the
+    // agent needs for gear advice. Both have tests of their own.
+    'Stats: HP 1450, Mana 820, Armor 512, Str 68, Agi 95, Sta 74, Int 61, Spi 52',
+    'Gear: 7 of 19 slots filled (12 empty)',
     // Talents have a test of their own: the line is built from C_SpecializationInfo, because the
     // vanilla tab globals are not callable on Forever.
     'Talents: Beast Mastery 14',
@@ -233,6 +238,96 @@ test('the game context lists the active specialization through the API the Forev
   vm.run('STUB.spec = 1');
   const bytes = Buffer.byteLength(vm.evaluate('WoWAI.GameContext()'), 'utf8');
   assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)`);
+});
+
+test('the game context sends stat totals and a filled/empty slot count, and stays inside the byte budget', () => {
+  const vm = newVM();
+  // The harness models the real client rather than a convenient one, because a stub that invents
+  // APIs is how the talents/professions lines shipped dead. The character sheet and the equipped
+  // reader are BARE globals on Forever -- Blizzard's own camelot-only code calls them that way
+  // (UnitHealthMax/UnitPowerType/UnitPowerMax at Camelot/PaperDollFrame.lua:630,648,649; UnitArmor
+  // at Camelot/PaperDollFrameStats.lua:460; UnitStat at Camelot/PaperDollFrame.lua:694;
+  // GetInventoryItemLink at Camelot/PaperDollFrame.lua:2140) -- while the bag/bank pair next door
+  // is namespaced. The addon must not assume symmetry, and neither may this harness.
+  assert.equal(vm.evaluate('type(_G.GetInventoryItemLink)'), 'function', 'the equipped reader is a bare global on this client');
+  assert.equal(vm.evaluate('C_Item and C_Item.GetInventoryItemLink'), null, 'and there is no namespaced twin to fall back on');
+  assert.equal(vm.evaluate('type(UnitStat)'), 'function', 'UnitStat is a bare global');
+  assert.equal(vm.evaluate('type(UnitArmor)'), 'function', 'so is UnitArmor');
+  // Eleven Forever unit functions are SecretWhenUnitStatsRestricted
+  // (UnitDocumentation.lua:337,647,666,684,1049,1071,2946,2964,3134,3200,3427); UnitStat is one.
+  // UnitHealthMax and UnitPowerMax carry their own predicates (SecretWhenUnitHealthMaxRestricted,
+  // SecretWhenUnitPowerMaxRestricted) rather than that one -- so the gate cannot be written against
+  // a single named predicate, and this harness secret-values every read the line makes. A secret is
+  // a number as far as type() is concerned, so `type(v) == "number"` is not a sufficient guard.
+  assert.equal(vm.evaluate('type(STUB.secret)'), 'number', 'a secret value is still a number to type()');
+  assert.equal(vm.evaluate('issecretvalue(STUB.secret)'), 'true', 'issecretvalue is what identifies it');
+  assert.equal(vm.evaluate('issecretvalue(1)'), 'false', 'and it does not fire on a plain number');
+
+  login(vm);
+  const ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.includes('Stats: HP 1450, Mana 820, Armor 512, Str 68, Agi 95, Sta 74, Int 61, Spi 52'), ctx);
+  assert.ok(ctx.includes('Gear: 7 of 19 slots filled (12 empty)'), ctx);
+  // Empty slots outnumber the 19-slot total only if the reader is wrong; a link is an item, a nil
+  // is an empty slot, and nothing else may be counted as either.
+  assert.ok(!ctx.includes('nil'), `no field may be built from a nil return: ${ctx}`);
+
+  // An empty slot is an empty slot, not a failure to read one: 19 slots, 0 links.
+  vm.run('STUB.equipped = {}');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Gear: 0 of 19 slots filled (19 empty)'), 'a bare character reads as 0 of 19');
+  // No equipped reader at all is UNKNOWN, not naked -- the line goes, it does not become "0 of 19".
+  vm.run('GetInventoryItemLink = nil');
+  assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Gear:'), 'no reader, no line');
+  vm.run('STUB.equipped = STUB_EQUIPPED');
+  vm.run('GetInventoryItemLink = STUB_GetInventoryItemLink');
+
+  // The slot count comes from the client, and 19 is only the last resort. NUM_INVSLOTS is a
+  // client global (Blizzard's camelot character frame walks it unguarded,
+  // Camelot/CharacterFrame.lua:38) that nothing in the camelot-only Lua defines, so an addon
+  // cannot assume it is there -- nor that it is 19. A client reporting 12 slots is read as 12
+  // slots, so the item in slot 16 is outside the range and is not counted: the client defines the
+  // range, and reading past it would be reading containers this client does not have.
+  vm.run('NUM_INVSLOTS = 12');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Gear: 6 of 12 slots filled (6 empty)'), 'the client owns the slot count');
+  vm.run('NUM_INVSLOTS = nil');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Gear: 7 of 19 slots filled (12 empty)'), '19 is the documented fallback (INVSLOT_HEAD=1..INVSLOT_TABARD=19)');
+  // A client that reports the count but refuses to let us read it (a secret) must not produce a
+  // Gear line built from it -- 19 is a fallback for an ABSENT count, not for an unreadable one.
+  vm.run('NUM_INVSLOTS = STUB.secret');
+  const secretCount = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(secretCount.includes('Gear: 7 of 19 slots filled (12 empty)'), `an unreadable slot count falls back rather than being printed: ${secretCount}`);
+  vm.run('NUM_INVSLOTS = 19');
+
+  // A stat the client refuses to show us (a secret on a restricted map) is left OUT, and the
+  // other stats still land. A fabricated 0 would be worse than the omission: the agent reasons on
+  // a number it is given, and cannot reason on one it is not.
+  vm.run('STUB.stats = { STUB.secret, 95, 74, 61, 52 }');
+  const partial = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(partial.includes('Stats: HP 1450, Mana 820, Armor 512, Agi 95, Sta 74, Int 61, Spi 52'), partial);
+  assert.ok(!/Str\s+\S/.test(partial), `a secret strength must not be printed at all: ${partial}`);
+  assert.ok(!partial.includes('Str 0'), 'and must not be printed as a plausible-looking 0');
+  // Armor is a secret too, on the same restricted map.
+  vm.run('STUB.armor = STUB.secret');
+  assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Armor'), 'a secret armor is left out');
+  // Every read secret: no Stats line at all, never a line of zeros.
+  vm.run('STUB.stats = { STUB.secret, STUB.secret, STUB.secret, STUB.secret, STUB.secret }');
+  vm.run('STUB.healthMax, STUB.powerMax = STUB.secret, STUB.secret');
+  const none = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(!none.includes('Stats:'), `no Stats line when nothing is readable: ${none}`);
+
+  // The budget is measured, not asserted: the block the addon actually produces, in bytes, must
+  // stay under the cap the strip reserves for it (CONTEXT_MAX = 700).
+  vm.run('STUB.stats = { 68, 95, 74, 61, 52 }; STUB.healthMax, STUB.armor, STUB.powerMax = 1450, 512, 820');
+  const full = vm.evaluate('WoWAI.GameContext()');
+  const bytes = Buffer.byteLength(full, 'utf8');
+  const lines = full.split('\n');
+  const detail = lines.map((l, i) => `${i + 1}: [${Buffer.byteLength(l, 'utf8')}] ${l}`).join('\n');
+  assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)\n${detail}`);
+  // A guard on the guard: the two new lines are what this card added, so they must actually be in
+  // the measured block rather than the measurement passing on an unchanged one.
+  const statsBytes = Buffer.byteLength(lines.find(l => l.startsWith('Stats: ')) || '', 'utf8');
+  const gearBytes = Buffer.byteLength(lines.find(l => l.startsWith('Gear: ')) || '', 'utf8');
+  assert.ok(statsBytes > 0 && gearBytes > 0, `both new lines present in the measured block\n${detail}`);
+  console.log(`      context block: ${bytes} bytes of 700 (slack ${700 - bytes}); +${statsBytes + gearBytes + 2} of it the two new lines`);
 });
 
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {

@@ -25,7 +25,7 @@ just a chat box — it is a doorway to a full agent:
 |---|---|---|
 | **L0** | Door: type in game, get a reply from a real agent | **proven in game** (2026-09-25) |
 | **L1** | The agent knows *who* you are (character, zone, position) | **built and confirmed live** (context block) |
-| **L2** | The agent knows your **gear, stats and bank** | deferred (Phase B) — **the agent does not see gear today**, see below |
+| **L2** | The agent knows your **gear, stats and bank** | **partly built** — stat totals + filled/empty slot count ride the context block (`t_52c484cb`); the **itemised** gear, bags and bank are still deferred, see below |
 | **L3** | Two-way: the addon pushes a full snapshot the agent can reason over | design only |
 
 Real gain is **L2** — not "the agent knows my pants," but *"the agent knows my bank."*
@@ -264,7 +264,7 @@ renamed, capture stops.** That is config (`capture.enabled`), not code.
 | In-game turns pinned to the `game` profile | done — `-p game`, confirmed in the profile's own log |
 | Approval boundary | **partially verified** — see *Next steps 2*, still open |
 | Real interface number measured | **done** — `16001`, from two sources that agree (below) |
-| Gear / stats / bank awareness | deferred (Phase B) — **the agent does not see gear today** |
+| Gear / stats / bank awareness | **partly built** — stat totals + filled/empty slot count ride the context (`t_52c484cb`); **itemised** gear, bags and bank still deferred |
 | StatForge port to Forever | separate project |
 
 **The interface number is resolved, and by two sources that agree.** Only one of them is an
@@ -310,16 +310,25 @@ the `Bridge error:` prefix on #5. This also pins the timing: the flush happened 
 `2026-09-25 15:12:12 EDT` (`ls -l` mtime), *after* the last run ended at `19:08:32Z`, i.e. on
 logout rather than mid-session. A mid-session `/reload` would have written earlier.
 
-**The agent does not currently see gear.** Worth stating plainly because it is easy to mistake
-for a working feature: `L2` is not built, and `WoWAI.GameContext()` sends game, character,
-location, position, money and XP — **no equipped items and no stats**. An in-game reply offered
-"quest help, a macro, gear advice, or just chatting" because `bridge/protocol.js` tells the
-agent in its context block that *"gear advice"* is one of the kinds of request the game context
-is for. That is the prompt suggesting a topic, **not** the agent reading your gear. Phase B
-scoping is a separate card (`t_18b783f6`); nothing here pre-empts it.
+**The agent does not currently see gear — no longer true of stats and slot counts, still true of
+items.** Worth stating precisely, because both halves are easy to mistake: until `t_52c484cb`,
+`WoWAI.GameContext()` sent game, character, location, position, money and XP — **no equipped items
+and no stats** — and an in-game reply offered "quest help, a macro, gear advice, or just chatting"
+because `bridge/protocol.js` tells the agent in its context block that *"gear advice"* is one of the
+kinds of request the game context is for. That was the prompt suggesting a topic, **not** the agent
+reading your gear.
 
-**What the context actually carried, verbatim.** `bridge/state.json` → `context.text`, the
-block the bridge handed the agent on run #6, is 234 bytes:
+As of `t_52c484cb` the block also carries **two compact summary lines** — stat totals from the
+character sheet and a filled/empty equipment-slot count — measured at 444 bytes against the 700-byte
+cap on the test harness (see the test named *"the game context sends stat totals and a filled/empty
+slot count…"*, which prints its own byte count when it runs). **No item names and no bag or bank
+contents reach the agent yet**: the itemised gear list is 437 bytes for a 16-slot character
+(`phase-b-l2-scoping.md` §5.3), which does not fit beside a real message, and belongs on the
+host-side SavedVariables lane — a later card. So *"do I have an upgrade in my bags?"* is still not
+answerable; *"what are my stats and how many slots are empty?"* is.
+
+**What the context carried before that change, verbatim.** `bridge/state.json` → `context.text`,
+the block the bridge handed the agent on run #6, was 234 bytes:
 
 ```
 Game: World of Warcraft: Forever (client 1.60.1.70009, interface 16001)
@@ -402,14 +411,16 @@ What has been observed so far, and why it is not the test: run #5 was blocked fr
 single in-game run. The control half (**unchanged behaviour in a normal profile**) has not been
 run, and no canary file was used. Treat it as partial.
 
-**3. Phase B — gear, stats and bank.** The `gameContext` slot carries ~700 bytes; today it
-holds game/character/location/position/money/XP — and **no gear is sent at all** (see the
-verbatim 234-byte block in *Current state*). The code also *attempts* talents and professions,
-but the measured block carried neither, so treat both as unverified rather than present.
-Extending this is the L2 step. Open question: what the *minimum* useful snapshot is, given
-the byte budget. Scoping lives in `docs/whisperstone/phase-b-l2-scoping.md` (card
-`t_18b783f6`) — that document is the authority on what fits; this note only records that the
-feature does not exist yet.
+**3. Phase B — gear, stats and bank.** The `gameContext` slot carries ~700 bytes. As of
+`t_52c484cb` it carries game/character/location/position/money/XP plus **stat totals and a
+filled/empty equipment-slot count** (444 bytes measured on the harness, 9 lines) — the compact
+half of L2. **Itemised gear, bags and the bank are still not sent**, and the pre-change block
+(234 bytes, in *Current state*) is quoted above for comparison; the earlier version of this note
+said the code *attempted* talents and professions and that the measured block carried neither,
+which was true at the time and is now fixed (`t_35f44ba8`, `t_481b5951`). What the *minimum*
+useful snapshot is, given the byte budget, is answered by `docs/whisperstone/phase-b-l2-scoping.md`
+(card `t_18b783f6`) — that document is the authority on what fits, including its measurement that a
+16-slot itemised listing is 437 bytes and does **not** fit.
 
 **4. Phase C — StatForge → Forever** (separate project). `StatForge` is on this machine at
 `/home/jnick/StatForge` and its `.toc` reads
