@@ -10,6 +10,12 @@ bridge/tmp/
 node_modules/
 tests/tmp/
 
+# agent scratch: per-card verification scripts written while working on a card.
+# Not part of the suite (never picked up by `npm test`), frequently a duplicate of an
+# assertion already in tests/, and a new one appears on most cards - so ignore the whole
+# directory rather than re-deciding it each time.
+.hermes-verify/
+
 # OS / local artifacts
 .DS_Store
 *.zip
