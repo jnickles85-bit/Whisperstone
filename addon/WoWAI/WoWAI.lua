@@ -1010,17 +1010,30 @@ function WoWAI.GameContext()
 	end
 	if #progress > 0 then table.insert(lines, table.concat(progress, "; ")) end
 
-	-- Classic-style talent tabs: name, icon, points spent.
-	local tabs = Try(GetNumTalentTabs)
-	if type(tabs) == "number" and tabs > 0 then
-		local parts = {}
-		for i = 1, tabs do
-			local tname, _, points = Try(GetTalentTabInfo, i)
-			if type(tname) == "string" and type(points) == "number" then
-				table.insert(parts, tname .. " " .. points)
-			end
+	-- Talents. The vanilla tab loop that used to live here (GetNumTalentTabs +
+	-- GetTalentTabInfo) was dead code on this client -- silently, because Try() swallows the
+	-- failure and the guard never fires. GetNumTalentTabs appears nowhere in the Forever UI tree
+	-- at all, and GetTalentTabInfo / GetTalentInfo are defined only by
+	-- Blizzard_DeprecatedSpecialization, whose .toc carries
+	-- "## AllowLoadGameType: classic, standard"; camelot is not in that list, so that addon never
+	-- loads here and neither shim exists. The shims would not have fit anyway -- they re-pack
+	-- C_SpecializationInfo.GetSpecializationInfo, whose position 5 is pointsSpent where the old
+	-- signature had different neighbours.
+	--
+	-- What the client does ship, and what Blizzard's own camelot-only UI calls
+	-- (Blizzard_UIPanels_Game/Camelot/PaperDollFrame.lua:498,504), is the C_SpecializationInfo
+	-- namespace: GetSpecialization() -> the one active spec's index,
+	-- GetSpecializationInfo(specIndex) -> specId, name, description, icon, role, primaryStat,
+	-- pointsSpent, ... There is no tab count to walk -- the namespace has no GetNumTalentTabs
+	-- equivalent -- so this is a signature change, not a rename. A spec of 0 (or an index the
+	-- client cannot describe, e.g. before the first talent point) yields no line: absence over a
+	-- plausible-looking zero.
+	local spec = Try(C_SpecializationInfo and C_SpecializationInfo.GetSpecialization)
+	if type(spec) == "number" and spec > 0 then
+		local _, sname, _, _, _, _, points = Try(C_SpecializationInfo.GetSpecializationInfo, spec)
+		if type(sname) == "string" and sname ~= "" then
+			table.insert(lines, "Talents: " .. sname .. (type(points) == "number" and (" " .. points) or ""))
 		end
-		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ")) end
 	end
 
 	-- Professions. The bare GetNumSkillLines / GetSkillLineInfo globals do not exist on this

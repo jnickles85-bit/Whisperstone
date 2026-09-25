@@ -135,7 +135,9 @@ test('the game context describes the character and rides on the hello, then only
     'Location: Duskwood - Darkshire',
     'Position: 45.2, 67.8 (map 1431)',
     'Money: 1g 23s 45c; XP: 1234/5000',
-    'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0',
+    // Talents have a test of their own: the line is built from C_SpecializationInfo, because the
+    // vanilla tab globals are not callable on Forever.
+    'Talents: Beast Mastery 14',
     // Professions have a test of their own: the line is built from a different API family
     // (GetProfessions/GetProfessionInfo, not the removed tab loop), and its absence in game has
     // more than one possible cause.
@@ -190,6 +192,45 @@ test('the game context lists professions through the API the Forever client actu
   assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Professions:'), 'no line without professions');
   // The whole block still fits the budget the strip reserves for it.
   vm.run('STUB.professions = { 393, nil, 129 }');
+  const bytes = Buffer.byteLength(vm.evaluate('WoWAI.GameContext()'), 'utf8');
+  assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)`);
+});
+
+test('the game context lists the active specialization through the API the Forever client actually has', () => {
+  const vm = newVM();
+  // The harness models the real client, so the dead tab loop cannot pass by accident. The vanilla
+  // talent tab globals are not callable on Forever: GetNumTalentTabs appears nowhere in the client
+  // at all (zero occurrences in the whole UI tree, generated docs included), and GetTalentTabInfo /
+  // GetTalentInfo are defined only by Blizzard_DeprecatedSpecialization, whose .toc carries
+  // "## AllowLoadGameType: classic, standard" -- camelot is not in that list, so the addon that
+  // would define those shims never loads here.
+  assert.equal(vm.evaluate('GetNumTalentTabs'), null, 'the client has no bare GetNumTalentTabs');
+  assert.equal(vm.evaluate('GetTalentTabInfo'), null, 'the client has no bare GetTalentTabInfo');
+  assert.equal(vm.evaluate('GetTalentInfo'), null, 'the client has no bare GetTalentInfo');
+  // What it does have, called unconditionally by its own camelot-only UI
+  // (Blizzard_UIPanels_Game/Camelot/PaperDollFrame.lua:498,504), is C_SpecializationInfo --
+  // GetSpecialization for the one active spec, GetSpecializationInfo(specIndex) to unpack it.
+  assert.equal(vm.evaluate('type(C_SpecializationInfo.GetSpecialization)'), 'function', 'the client does have C_SpecializationInfo.GetSpecialization');
+  assert.equal(vm.evaluate('type(C_SpecializationInfo.GetSpecializationInfo)'), 'function', 'and GetSpecializationInfo');
+  // There is no tab count to walk: the namespace has no GetNumTalentTabs equivalent at all.
+  assert.equal(vm.evaluate('C_SpecializationInfo.GetNumTalentTabs'), null, 'the modern namespace exposes no tab count');
+  login(vm);
+  // At a level where talents are possible -- Forever grants the first point at 10 -- so a spec is
+  // meaningful rather than trivially absent. In-game appearance cannot judge this fix: the live
+  // character is level 9, so the line's absence there is over-determined.
+  const level = Number(vm.evaluate('STUB.level'));
+  assert.ok(level >= 10, `level ${level} is at or past the first talent point`);
+  const ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.includes('Talents: Beast Mastery 14'), ctx);
+  // A client reporting no spec (spec 0, as before the first talent point) gets no line -- absence
+  // over a plausible-looking zero.
+  vm.run('STUB.spec = 0');
+  assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Talents:'), 'no line without an active spec');
+  // So does an index the client cannot describe -- no "Talents: nil".
+  vm.run('STUB.spec = 99');
+  assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Talents:'), 'no line when the spec has no info');
+  // And the whole block still fits the budget the strip reserves for it.
+  vm.run('STUB.spec = 1');
   const bytes = Buffer.byteLength(vm.evaluate('WoWAI.GameContext()'), 'utf8');
   assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)`);
 });

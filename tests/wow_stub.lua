@@ -214,11 +214,36 @@ C_Map = {
 }
 function UnitXP(unit) return 1234 end
 function UnitXPMax(unit) return 5000 end
-function GetNumTalentTabs() return 3 end
-function GetTalentTabInfo(i)
-	local tabs = { { "Beast Mastery", 10 }, { "Marksmanship", 5 }, { "Survival", 0 } }
-	return tabs[i][1], "Interface\\Icons\\x", tabs[i][2]
-end
+-- Talents, as Forever exposes them. There is deliberately NO bare GetNumTalentTabs / GetTalentTabInfo
+-- / GetTalentInfo here: a stub that invents them makes code that cannot run in game look tested,
+-- which is exactly how the Talents line shipped dead.
+--
+-- What the client actually has: C_SpecializationInfo, called unconditionally by camelot-only UI
+-- (Blizzard_UIPanels_Game/Camelot/PaperDollFrame.lua:498,504 and :2420, CharacterFrame.lua:1117).
+-- GetSpecialization() returns the one active spec's index and GetSpecializationInfo(specIndex)
+-- unpacks specId, name, description, icon, role, primaryStat, pointsSpent, background,
+-- previewPointsSpent, isUnlocked (Blizzard_APIDocumentationGenerated/SpecializationInfoDocumentation.lua:237,254).
+-- There is no tab count to walk: the namespace has no GetNumTalentTabs equivalent at all.
+--
+-- The old globals are absent for a documented reason, not by omission. GetNumTalentTabs appears
+-- zero times in the whole forever UI tree, and GetTalentTabInfo / GetTalentInfo exist only as
+-- deprecated shims in Blizzard_DeprecatedSpecialization, whose .toc carries
+-- "## AllowLoadGameType: classic, standard" -- camelot is not in that list, so that addon never
+-- loads on Forever and neither shim is ever defined there.
+STUB.spec = 1 -- the active specialization index; 0 means the client reports no spec
+STUB.specInfo = {
+	[1] = { specId = 253, name = "Beast Mastery", pointsSpent = 14 }, -- 23 levels, one point per level from 10
+	[2] = { specId = 254, name = "Marksmanship", pointsSpent = 0 },
+	[3] = { specId = 255, name = "Survival", pointsSpent = 0 },
+}
+C_SpecializationInfo = {
+	GetSpecialization = function() return STUB.spec end,
+	GetSpecializationInfo = function(specIndex)
+		local s = STUB.specInfo[specIndex]
+		if not s then return nil end
+		return s.specId, s.name, "A description", 12345, "DAMAGER", 3, s.pointsSpent, "background", s.pointsSpent, true
+	end,
+}
 -- TRADE_SKILLS is a global string on this client (Blizzard's own Camelot XML uses it as
 -- text="TRADE_SKILLS"), though it lives in the locale data rather than the exe's string table.
 -- SECONDARY_SKILLS appears nowhere in the forever UI tree or the client, so it is not defined here.

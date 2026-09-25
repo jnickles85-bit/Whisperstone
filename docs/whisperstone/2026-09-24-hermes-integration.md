@@ -154,8 +154,9 @@ Maps the three observed event types onto what `bridge.js` expects
   equipped gear and stats is additive.
 - **Phase C (separate project):** StatForge-level gear analysis in-game. **Requires a
   `StatForge` port to Forever/Mainline** — it currently targets Classic Era (interface 11508)
-  and calls `GetNumTalentTabs` / `GetTalentInfo`, both removed on Forever in favour of
-  `C_Traits`. Not part of this fork.
+  and calls `GetNumTalentTabs` / `GetTalentInfo`. `GetNumTalentTabs` is genuinely absent from
+  Forever and the other two are load-gated out (see `docs/whisperstone/phase-b-l2-scoping.md`
+  §2); the modern path is `C_SpecializationInfo`, not `C_Traits`. Not part of this fork.
 
 ## Licence and attribution
 

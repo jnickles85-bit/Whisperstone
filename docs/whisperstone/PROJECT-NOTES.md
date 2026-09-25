@@ -331,10 +331,18 @@ Money: 30s 5c; XP: 4931/6500
 
 Two honest observations about that sample, both of which contradict wider claims in the docs:
 
-- **No `Talents:` line**, which is consistent with `GetNumTalentTabs` being absent from Forever
-  — the call is a no-op behind `Try()` and the guard never fires
-  (`addon/WoWAI/WoWAI.lua:1014`). The code path exists; it cannot produce output on this client.
-  Its own card (`t_481b5951`) owns the fix.
+- **No `Talents:` line in this sample — and that absence was over-determined, not evidence.** The
+  code called the vanilla tab loop (`GetNumTalentTabs` / `GetTalentTabInfo`,
+  `addon/WoWAI/WoWAI.lua:1014`), which cannot run on this client: `GetNumTalentTabs` appears
+  nowhere in the Forever UI tree, and `GetTalentTabInfo` / `GetTalentInfo` are defined only by
+  `Blizzard_DeprecatedSpecialization`, whose `.toc` carries
+  `## AllowLoadGameType: classic, standard` — `camelot` is not in that list, so that addon never
+  loads here. The character was also **level 9**, and Forever grants the first talent point at 10,
+  so the line could not have appeared either way. The two causes are indistinguishable from the
+  live block alone, which is why this was judged in the harness and not in game. Fixed by
+  `t_481b5951` to use `C_SpecializationInfo.GetSpecialization()` →
+  `GetSpecializationInfo(specIndex)`, the pair Blizzard's own camelot-only `PaperDollFrame.lua`
+  calls (there is no tab count to walk: the namespace has no `GetNumTalentTabs` equivalent).
 - **No `Professions:` line in this sample — and that absence was a defect, not a character fact.**
   The code called the bare `GetNumSkillLines` / `GetSkillLineInfo` globals (`:1027`), which **do
   not exist on Forever** (skills are `C_SkillInfo.*`, and `C_SkillInfo.GetSkillLineInfo(index)`
@@ -345,9 +353,10 @@ Two honest observations about that sample, both of which contradict wider claims
   absence was over-determined and **in-game appearance cannot judge this fix.**
 
 `README.md` and this note both previously described the context as carrying "talents and
-professions"; the live block shows neither. For professions that was a real defect, now fixed and
-covered by a test that fails against the old code. **The `README` line is left as upstream's text**
-(it describes the addon's intent and the other clients) and is not touched by this card.
+professions"; the live block shows neither. Both were real defects, and both are now fixed and
+covered by tests that fail against the old code: professions by `t_35f44ba8`, talents by
+`t_481b5951`. **The `README` line is left as upstream's text** (it describes the addon's intent
+and the other clients) and is not touched by these cards.
 
 ---
 
