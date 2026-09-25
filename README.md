@@ -6,6 +6,10 @@
 > docs and tests; the transport, addon and slot/signal machinery are upstream work
 > and are credited as such. See `docs/whisperstone/`. Upstream is kept as the
 > `upstream` git remote so we can sync and offer the adapter back.
+>
+> **New here? Read [`docs/whisperstone/PROJECT-NOTES.md`](docs/whisperstone/PROJECT-NOTES.md)
+> first** — what we are trying to build, what is actually proven, the current state, and
+> the next steps.
 
 <p align="center">
   <img src="docs/screenshot.jpg" alt="The WoW AI chat window open in Goldshire, with a message on its way to a coding agent" width="900">
