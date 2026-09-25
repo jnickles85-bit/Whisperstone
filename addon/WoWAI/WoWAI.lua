@@ -2550,8 +2550,10 @@ local MAP_RADIUS = 5 -- how far outside the minimap's edge the button sits, in p
 local MAP_DEFAULT_ANGLE = 225 -- bottom-left: out of the way of Blizzard's own buttons
 
 -- A round minimap puts the button on the circle; a square-ish one would let it
--- poke off a corner, so there the diagonal is clamped instead. Only the shapes
--- this client's minimap can report.
+-- poke off a corner, so there the diagonal is clamped instead. The full set
+-- GetMinimapShape documents, quadrant order and clamp maths identical to
+-- LibDBIcon's updatePosition - an unknown shape falls back to ROUND below, so
+-- omitting a row here silently treats that shape as round.
 local MAP_SHAPES = {
 	ROUND = { true, true, true, true },
 	SQUARE = { false, false, false, false },
@@ -2563,6 +2565,10 @@ local MAP_SHAPES = {
 	["SIDE-RIGHT"] = { true, false, true, false },
 	["SIDE-TOP"] = { false, false, true, true },
 	["SIDE-BOTTOM"] = { true, true, false, false },
+	["TRICORNER-TOPLEFT"] = { false, true, true, true },
+	["TRICORNER-TOPRIGHT"] = { true, false, true, true },
+	["TRICORNER-BOTTOMLEFT"] = { true, true, false, true },
+	["TRICORNER-BOTTOMRIGHT"] = { true, true, true, false },
 }
 
 -- math.atan2 is in the client's Lua 5.1; where it is gone (the test VM runs

@@ -746,3 +746,72 @@ test('the minimap button survives a square minimap, an unsized minimap and no Ge
   x = Number(vm.evaluate('WoWAIMapButton.x'));
   assert.ok(Math.abs(x - (-Math.SQRT1_2 * 105)) < 0.01, `follows the new size on the round fallback, x=${x} expected ${-Math.SQRT1_2 * 105}`);
 });
+
+test('the minimap button reads every shape GetMinimapShape can return, TRICORNER included', () => {
+  // GetMinimapShape's documented set is ROUND, SQUARE, CORNER-*, SIDE-* and
+  // TRICORNER-*. A shape the placement table does not know is silently treated
+  // as round, which is how a button ends up poking off a squared-off corner.
+  // Drive the real code at one angle per quadrant, for every documented shape,
+  // and compare against LibDBIcon's own quadrant table and maths.
+  const libdbicon = {
+    ROUND: [true, true, true, true],
+    SQUARE: [false, false, false, false],
+    'CORNER-TOPLEFT': [false, false, false, true],
+    'CORNER-TOPRIGHT': [false, false, true, false],
+    'CORNER-BOTTOMLEFT': [false, true, false, false],
+    'CORNER-BOTTOMRIGHT': [true, false, false, false],
+    'SIDE-LEFT': [false, true, false, true],
+    'SIDE-RIGHT': [true, false, true, false],
+    'SIDE-TOP': [false, false, true, true],
+    'SIDE-BOTTOM': [true, true, false, false],
+    'TRICORNER-TOPLEFT': [false, true, true, true],
+    'TRICORNER-TOPRIGHT': [true, false, true, true],
+    'TRICORNER-BOTTOMLEFT': [true, true, false, true],
+    'TRICORNER-BOTTOMRIGHT': [true, true, true, false],
+  };
+  const half = 70, radius = 5; // 140x140 stub minimap, MAP_RADIUS
+  const w = half + radius;
+  const diagW = Math.sqrt(2 * w * w) - 10;
+  // LibDBIcon's updatePosition, verbatim, for the expected coordinates.
+  // Its quadrant table is Lua (1-indexed), so shift the JS mirror by one.
+  const expected = (shape, angle) => {
+    const rad = (angle * Math.PI) / 180;
+    let x = Math.cos(rad), y = Math.sin(rad);
+    let q = 1;
+    if (x < 0) q = q + 1;
+    if (y > 0) q = q + 2;
+    const quad = libdbicon[shape];
+    if (quad[q - 1]) return [x * w, y * w];
+    return [
+      Math.max(-w, Math.min(x * diagW, w)),
+      Math.max(-w, Math.min(y * diagW, w)),
+    ];
+  };
+  const quadOf = (shape, angle) => {
+    const rad = (angle * Math.PI) / 180;
+    let q = 1;
+    if (Math.cos(rad) < 0) q = q + 1;
+    if (Math.sin(rad) > 0) q = q + 2;
+    return libdbicon[shape][q - 1];
+  };
+  let checked = 0, clamped = 0;
+  for (const shape of Object.keys(libdbicon)) {
+    const vm = newVM();
+    vm.run(`STUB.minimapShape = ${JSON.stringify(shape)}`);
+    login(vm);
+    for (const angle of [45, 135, 225, 315]) {
+      vm.run(`WoWAIDB.settings.mapAngle = ${angle}; WoWAI.PlaceMapButton()`);
+      const x = Number(vm.evaluate('WoWAIMapButton.x'));
+      const y = Number(vm.evaluate('WoWAIMapButton.y'));
+      const [ex, ey] = expected(shape, angle);
+      assert.ok(
+        Math.abs(x - ex) < 0.01 && Math.abs(y - ey) < 0.01,
+        `${shape} @${angle}: got ${x},${y} expected ${ex},${ey}`
+      );
+      checked++;
+      if (!quadOf(shape, angle)) clamped++;
+    }
+  }
+  assert.equal(checked, 56, 'every documented shape was placed at four angles');
+  assert.ok(clamped > 0, 'some quadrant really did clamp, so the TRICORNER rows are not vacuous');
+});
