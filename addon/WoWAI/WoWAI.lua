@@ -1023,23 +1023,37 @@ function WoWAI.GameContext()
 		if #parts > 0 then table.insert(lines, "Talents: " .. table.concat(parts, " / ")) end
 	end
 
-	-- Skill lines under the Professions and Secondary Skills headers.
-	local n = Try(GetNumSkillLines)
-	if type(n) == "number" then
-		local header, parts = nil, {}
-		local wanted = { [TRADE_SKILLS or "Professions"] = true, [SECONDARY_SKILLS or "Secondary Skills"] = true }
-		for i = 1, n do
-			local sname, isHeader, _, rank, _, _, maxRank = Try(GetSkillLineInfo, i)
+	-- Professions. The bare GetNumSkillLines / GetSkillLineInfo globals do not exist on this
+	-- client -- skills live under C_SkillInfo, and its GetSkillLineInfo returns one
+	-- SkillLineAttributes table rather than a positional list -- so the old loop here never ran
+	-- and the line was never sent. What the client does ship, and what Blizzard's own
+	-- camelot-only professions UI calls (Blizzard_ProfessionsBook/Camelot/Blizzard_ProfessionsBook.lua:21,57),
+	-- is GetProfessions() -- one skill-line index per profession slot -- plus
+	-- GetProfessionInfo(index) -> name, texture, rank, maxRank, ... That also drops the old
+	-- header-string matching against TRADE_SKILLS / SECONDARY_SKILLS, which is locale-fragile.
+	--
+	-- Slots are positional and may be empty, so they are read with `select` rather than captured
+	-- into a table: `{ GetProfessions() }` loses the position of a hole, and an `ipairs` walk over
+	-- it stops dead at the first empty slot (measured: slots `393, nil, 129` yield one entry),
+	-- silently dropping the trailing secondaries. `#` is no help either -- it returns a *border*,
+	-- and the value is undefined for a table with holes in Lua 5.1. Seven is the widest
+	-- destructure Blizzard's own UI uses (Blizzard_Professions/Camelot/...:16).
+	local p1, p2, p3, p4, p5, p6, p7 = Try(GetProfessions)
+	local parts = {}
+	for i = 1, 7 do
+		local index = select(i, p1, p2, p3, p4, p5, p6, p7)
+		if index ~= nil then
+			local sname, _, rank, maxRank = Try(GetProfessionInfo, index)
 			if type(sname) == "string" then
-				if isHeader then
-					header = sname
-				elseif header and wanted[header] then
-					table.insert(parts, sname .. (rank and (" " .. tostring(rank) .. (maxRank and ("/" .. tostring(maxRank)) or "")) or ""))
+				local text = sname
+				if type(rank) == "number" then
+					text = text .. " " .. rank .. (type(maxRank) == "number" and ("/" .. maxRank) or "")
 				end
+				table.insert(parts, text)
 			end
 		end
-		if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
 	end
+	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
 	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end

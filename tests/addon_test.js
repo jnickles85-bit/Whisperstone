@@ -136,6 +136,9 @@ test('the game context describes the character and rides on the hello, then only
     'Position: 45.2, 67.8 (map 1431)',
     'Money: 1g 23s 45c; XP: 1234/5000',
     'Talents: Beast Mastery 10 / Marksmanship 5 / Survival 0',
+    // Professions have a test of their own: the line is built from a different API family
+    // (GetProfessions/GetProfessionInfo, not the removed tab loop), and its absence in game has
+    // more than one possible cause.
     'Professions: Skinning 75/75, First Aid 40/75',
   ]);
   // The bridge answers the hello: the context is now known to be on its side.
@@ -167,6 +170,28 @@ test('the game context describes the character and rides on the hello, then only
   const on = stripRecords(vm).filter(r => r.flags === 'h;c');
   assert.ok(on.some(r => r.ctx.includes('Character: Testchar')));
   assert.ok(vm.evaluate('WoWAIDB.chats[2].history[#WoWAIDB.chats[2].history].text').includes('Game context is ON'));
+});
+
+test('the game context lists professions through the API the Forever client actually has', () => {
+  const vm = newVM();
+  // The harness models the real client, so the old code path cannot pass by accident: the bare
+  // skill-line globals do not exist on Forever (skills are C_SkillInfo.GetNumSkillLines /
+  // C_SkillInfo.GetSkillLineInfo, returning a SkillLineAttributes table), and a stub that
+  // defines them tests code that cannot run in game.
+  assert.equal(vm.evaluate('GetNumSkillLines'), null, 'the client has no bare GetNumSkillLines');
+  assert.equal(vm.evaluate('GetSkillLineInfo'), null, 'the client has no bare GetSkillLineInfo');
+  assert.equal(vm.evaluate('type(GetProfessions)'), 'function', 'the client does have GetProfessions');
+  login(vm);
+  const ctx = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(ctx.includes('Professions: Skinning 75/75, First Aid 40/75'), ctx);
+  // An empty slot among the two primaries (GetProfessions returns nil for it) is skipped, and a
+  // character with nothing trained gets no line at all -- as in game.
+  vm.run('STUB.professions = {}');
+  assert.ok(!vm.evaluate('WoWAI.GameContext()').includes('Professions:'), 'no line without professions');
+  // The whole block still fits the budget the strip reserves for it.
+  vm.run('STUB.professions = { 393, nil, 129 }');
+  const bytes = Buffer.byteLength(vm.evaluate('WoWAI.GameContext()'), 'utf8');
+  assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)`);
 });
 
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {

@@ -219,17 +219,39 @@ function GetTalentTabInfo(i)
 	local tabs = { { "Beast Mastery", 10 }, { "Marksmanship", 5 }, { "Survival", 0 } }
 	return tabs[i][1], "Interface\\Icons\\x", tabs[i][2]
 end
-TRADE_SKILLS, SECONDARY_SKILLS = "Professions", "Secondary Skills"
-local SKILLS = {
-	{ "Class Skills", true }, { "Bows", false, 46, 115 },
-	{ "Professions", true }, { "Skinning", false, 75, 75 },
-	{ "Secondary Skills", true }, { "First Aid", false, 40, 75 },
-	{ "Weapon Skills", true }, { "Swords", false, 10, 115 },
+-- TRADE_SKILLS is a global string on this client (Blizzard's own Camelot XML uses it as
+-- text="TRADE_SKILLS"), though it lives in the locale data rather than the exe's string table.
+-- SECONDARY_SKILLS appears nowhere in the forever UI tree or the client, so it is not defined here.
+TRADE_SKILLS = "Professions"
+
+-- Professions, as Forever exposes them. The client registers exactly two globals for this:
+-- GetProfessions() returns the skill-line indices of the character's trained professions, and
+-- GetProfessionInfo(index) unpacks one in the order Blizzard's Camelot professions UI
+-- destructures it -- name, texture, rank, maxRank, numSpells, spellOffset, skillLine,
+-- rankModifier, specializationIndex, specializationOffset, skillLineName. Both are called
+-- unconditionally by camelot-only files (Blizzard_ProfessionsBook/Camelot/...:21,57,
+-- Blizzard_Professions/Camelot/...:16,56), i.e. code that only loads on Forever's game type.
+--
+-- There is deliberately NO bare GetNumSkillLines / GetSkillLineInfo here. The client has no such
+-- globals -- skills are C_SkillInfo.GetSkillLineInfo(index), returning one SkillLineAttributes
+-- table (and C_SkillInfo.GetNumSkillLines(), which takes no argument), so a stub that invents the
+-- bare positional forms makes code that cannot run in game look tested.
+STUB.professions = { 393, nil, 129 } -- one primary trained, the other slot empty, one secondary
+STUB.professionInfo = {
+	[393] = { "Skinning", 75, 75, 393 }, -- name, rank, maxRank, skillLine
+	[129] = { "First Aid", 40, 75, 129 },
 }
-function GetNumSkillLines() return #SKILLS end
-function GetSkillLineInfo(i)
-	local s = SKILLS[i]
-	return s[1], s[2] or nil, false, s[3], 0, 0, s[4]
+function GetProfessions()
+	local p = STUB.professions
+	return p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+end
+-- The full eleven-value form Blizzard's Camelot code destructures, so a caller reading any slot
+-- reads the same one it would in game.
+function GetProfessionInfo(index)
+	local p = STUB.professionInfo[index]
+	if not p then return nil end
+	local name, rank, maxRank, skillLine = p[1], p[2], p[3], p[4]
+	return name, "Interface\\Icons\\Trade_Skinning", rank, maxRank, 0, 0, skillLine, 0, 0, 0, name
 end
 ITEM_QUALITY2_DESC = "Uncommon"
 C_Item = {

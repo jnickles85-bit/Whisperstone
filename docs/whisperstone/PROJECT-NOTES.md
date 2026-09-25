@@ -199,13 +199,14 @@ it is recorded as partial. **Next step 2 stays open.**
 `progress: ["$ echo WHISPERSTONE_TOOLTEST"]` and a real reply. `tool_use` events are surfaced
 as one readable line each; `tool_result` is deliberately silent.
 
-**Test suite:** `npm test` → **54 tests, 52 pass, 2 fail**. Both failures are **pre-existing
+**Test suite:** `npm test` → **55 tests, 53 pass, 2 fail**. Both failures are **pre-existing
 upstream**, Windows-path-semantics assertions running on Linux (`D:\elsewhere` is not
 absolute to `path`; `path.basename` does not split on `\`). Upstream targets Windows/NTFS
 with Windows-only CI. **Do not "fix" these by editing the tests** — a change there is
 untestable against the real target platform. (Baseline before the minimap work was 49 tests /
-47 pass / 2 fail; the minimap button added 5 tests and 5 passes, so the two failures are
-unchanged in both count and identity.)
+47 pass / 2 fail; the minimap button added 5 tests and 5 passes, and the professions fix
+added 1 test and 1 pass — the two failures are unchanged in count and identity across all
+three.)
 
 ---
 
@@ -333,17 +334,20 @@ Two honest observations about that sample, both of which contradict wider claims
 - **No `Talents:` line**, which is consistent with `GetNumTalentTabs` being absent from Forever
   — the call is a no-op behind `Try()` and the guard never fires
   (`addon/WoWAI/WoWAI.lua:1014`). The code path exists; it cannot produce output on this client.
-- **No `Professions:` line in this sample.** The code attempts it
-  (`GetNumSkillLines`/`GetSkillLineInfo`, `:1027`), but this character may simply have no
-  profession ranks to report. **Unverified either way** — one sample cannot distinguish "no
-  professions trained" from "the call returns nothing here". Label it unverified rather than
-  either deleting the claim or repeating it.
+  Its own card (`t_481b5951`) owns the fix.
+- **No `Professions:` line in this sample — and that absence was a defect, not a character fact.**
+  The code called the bare `GetNumSkillLines` / `GetSkillLineInfo` globals (`:1027`), which **do
+  not exist on Forever** (skills are `C_SkillInfo.*`, and `C_SkillInfo.GetSkillLineInfo(index)`
+  returns one `SkillLineAttributes` table rather than a positional list), so the call returned
+  nothing and the line was never built. Fixed by `t_35f44ba8` to use `GetProfessions()` /
+  `GetProfessionInfo(index)`, the pair Blizzard's own camelot-only professions UI calls. Proven in
+  the harness, not in game: the live character may also have no professions trained, so the line's
+  absence was over-determined and **in-game appearance cannot judge this fix.**
 
 `README.md` and this note both previously described the context as carrying "talents and
-professions"; the live block shows neither. That is not a defect in the addon, but it is a
-claim in the docs that the measured context does not support. **The `README` line is left as
-upstream's text** (it describes the addon's intent and the other clients) and is not touched by
-this card — flagged here so it is not mistaken for verified behaviour on Forever.
+professions"; the live block shows neither. For professions that was a real defect, now fixed and
+covered by a test that fails against the old code. **The `README` line is left as upstream's text**
+(it describes the addon's intent and the other clients) and is not touched by this card.
 
 ---
 
