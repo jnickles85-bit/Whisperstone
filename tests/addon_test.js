@@ -642,3 +642,107 @@ test('reload mode writes the outbox for the bridge instead of drawing the strip'
   assert.equal(vm.evaluate('WoWAIDB.outbox.text'), Buffer.from('via reload').toString('hex'));
   assert.equal(decodeStrip(vm), null);
 });
+
+test('the minimap button exists on the minimap, click toggles the window with no slash command', () => {
+  const vm = newVM();
+  login(vm);
+  // It is a real frame, a child of Blizzard's Minimap (so it shows and hides with it).
+  assert.equal(vm.evaluate('WoWAIMapButton ~= nil'), 'true');
+  assert.equal(vm.evaluate('WoWAIMapButton:GetParent() == Minimap'), 'true');
+  assert.equal(vm.evaluate('WoWAIMapButton.shown'), 'true', 'visible whenever the minimap is');
+  // Clicking is the no-argument /wow-ai: the window toggles both ways.
+  assert.equal(vm.evaluate('WoWAIFrame.shown'), 'false');
+  vm.run('WoWAIMapButton.scripts.OnClick(WoWAIMapButton)');
+  assert.equal(vm.evaluate('WoWAIFrame.shown'), 'true', 'click opens it');
+  assert.equal(vm.evaluate('WoWAIDB.settings.shown'), 'true');
+  vm.run('WoWAIMapButton.scripts.OnClick(WoWAIMapButton)');
+  assert.equal(vm.evaluate('WoWAIFrame.shown'), 'false', 'click again closes it');
+  // Identical to the slash command with no argument, from the same state.
+  vm.run('SlashCmdList.WOWAI("")');
+  const afterSlash = vm.evaluate('WoWAIFrame.shown');
+  vm.run('WoWAIMapButton.scripts.OnClick(WoWAIMapButton)');
+  vm.run('WoWAIMapButton.scripts.OnClick(WoWAIMapButton)');
+  assert.equal(vm.evaluate('WoWAIFrame.shown'), afterSlash, 'button and /wow-ai land in the same state');
+});
+
+test('the minimap button sits on the minimap edge at its saved angle and shows the addon in a tooltip', () => {
+  const vm = newVM();
+  login(vm);
+  // Default 225 degrees: bottom-left, on the 140x140 map's radius plus the 5px inset.
+  const R = 70 + 5;
+  assert.equal(vm.evaluate('WoWAIDB.settings.mapAngle'), '225');
+  let x = Number(vm.evaluate('WoWAIMapButton.x'));
+  let y = Number(vm.evaluate('WoWAIMapButton.y'));
+  assert.ok(Math.abs(x - (-R * Math.SQRT1_2)) < 0.01, `x=${x}`);
+  assert.ok(Math.abs(y - (-R * Math.SQRT1_2)) < 0.01, `y=${y}`);
+  assert.equal(vm.evaluate('WoWAIMapButton.point'), 'CENTER');
+  assert.equal(vm.evaluate('WoWAIMapButton.rel == Minimap'), 'true', 'anchored to the minimap, its own centre');
+  assert.equal(vm.evaluate('WoWAIMapButton.relPoint'), 'CENTER');
+  // 90 degrees is the top of the map, straight up from its centre.
+  vm.run('WoWAIDB.settings.mapAngle = 90; WoWAI.PlaceMapButton()');
+  x = Number(vm.evaluate('WoWAIMapButton.x'));
+  y = Number(vm.evaluate('WoWAIMapButton.y'));
+  assert.ok(Math.abs(x) < 0.01 && Math.abs(y - R) < 0.01, `x=${x} y=${y}`);
+  // Hovering names the addon.
+  vm.run('STUB.texts = {}; WoWAIMapButton.scripts.OnEnter(WoWAIMapButton)');
+  assert.ok(vm.evaluate('table.concat(STUB.texts, "|")').includes('WoW AI'), 'tooltip identifies the addon');
+});
+
+test('dragging the button around the minimap saves the angle, and a reload puts it back there', () => {
+  const vm = newVM();
+  login(vm);
+  // Grab the button, then move the cursor to the right of the minimap (0 degrees).
+  vm.run('WoWAIMapButton.scripts.OnDragStart(WoWAIMapButton)');
+  assert.equal(vm.evaluate('WoWAIMapButton.scripts.OnUpdate ~= nil'), 'true', 'the drag installs its OnUpdate');
+  vm.run('STUB.cursorX, STUB.cursorY = 600, 500; WoWAIMapButton.scripts.OnUpdate(WoWAIMapButton)');
+  assert.equal(Number(vm.evaluate('WoWAIDB.settings.mapAngle')).toFixed(0), '0');
+  // Straight above the centre is 90; straight below is 270.
+  vm.run('STUB.cursorX, STUB.cursorY = 500, 600; WoWAIMapButton.scripts.OnUpdate(WoWAIMapButton)');
+  assert.equal(Number(vm.evaluate('WoWAIDB.settings.mapAngle')).toFixed(0), '90');
+  vm.run('STUB.cursorX, STUB.cursorY = 400, 500; WoWAIMapButton.scripts.OnUpdate(WoWAIMapButton)');
+  assert.equal(Number(vm.evaluate('WoWAIDB.settings.mapAngle')).toFixed(0), '180');
+  vm.run('STUB.cursorX, STUB.cursorY = 560, 520; WoWAIMapButton.scripts.OnUpdate(WoWAIMapButton)');
+  const dragged = Number(vm.evaluate('WoWAIDB.settings.mapAngle'));
+  assert.ok(dragged > 0 && dragged < 90, `angle in the upper right quadrant, got ${dragged}`);
+  vm.run('WoWAIMapButton.scripts.OnDragStop(WoWAIMapButton)');
+  assert.equal(vm.evaluate('WoWAIMapButton.scripts.OnUpdate'), null, 'the drag removes its OnUpdate');
+  // The button lands where the drag left it.
+  assert.ok(Math.abs(Number(vm.evaluate('WoWAIMapButton.x')) - Math.cos(dragged * Math.PI / 180) * 75) < 0.01);
+  assert.ok(Math.abs(Number(vm.evaluate('WoWAIMapButton.y')) - Math.sin(dragged * Math.PI / 180) * 75) < 0.01);
+  // A /reload: the same saved data, fresh UI. The button is built again at the saved angle.
+  const saved = vm.evaluate('WoWAIDB.settings.mapAngle');
+  const vm2 = newVM();
+  vm2.run(`WoWAIDB = { chats = { { id = "c1", name = "Chat 1", cwd = "", history = {}, unread = 0, created = 1 } }, activeChat = "c1", settings = { mapAngle = ${saved} } }`);
+  login(vm2);
+  assert.equal(vm2.evaluate('WoWAIDB.settings.mapAngle'), saved, 'the angle came back with the saved data');
+  assert.ok(Math.abs(Number(vm2.evaluate('WoWAIMapButton.x')) - Math.cos(dragged * Math.PI / 180) * 75) < 0.01);
+  assert.ok(Math.abs(Number(vm2.evaluate('WoWAIMapButton.y')) - Math.sin(dragged * Math.PI / 180) * 75) < 0.01);
+});
+
+test('the minimap button survives a square minimap, an unsized minimap and no GetMinimapShape', () => {
+  // A square minimap cannot hold a button on the circle: the button is pulled in
+  // toward the diagonal (the same clamp LibDBIcon uses) so it hangs off no corner.
+  const vm = newVM();
+  vm.run('STUB.minimapShape = "SQUARE"; STUB.texts = {}');
+  login(vm);
+  // The clamp: diagonal radius for a half-size of `half`, minus 10, bounded by half.
+  const squareSpot = half => Math.max(-half, Math.min(-Math.SQRT1_2 * (Math.SQRT2 * half - 10), half));
+  let x = Number(vm.evaluate('WoWAIMapButton.x'));
+  let y = Number(vm.evaluate('WoWAIMapButton.y'));
+  assert.ok(Math.abs(x - squareSpot(75)) < 0.01, `x=${x} expected ${squareSpot(75)}`);
+  assert.ok(Math.abs(y - squareSpot(75)) < 0.01, `y=${y} expected ${squareSpot(75)}`);
+  assert.ok(Math.abs(x) <= 70 && Math.abs(y) <= 70, `inside the 140x140 map, got ${x},${y}`);
+  // A minimap that has no size yet (a frame with no size reports 0 in the client)
+  // falls back to a stock size instead of collapsing the button onto the middle.
+  vm.run('Minimap:SetSize(0, 0); WoWAI.PlaceMapButton()');
+  const nx = Number(vm.evaluate('WoWAIMapButton.x'));
+  const ny = Number(vm.evaluate('WoWAIMapButton.y'));
+  assert.ok(Math.abs(nx - x) < 0.01 && Math.abs(ny - y) < 0.01, 'the fallback size gives the same spot as a real 140x140 map');
+  assert.ok(Math.abs(nx) > 1, 'not collapsed onto the centre');
+  // Another addon removing GetMinimapShape, or resizing the minimap, must not throw.
+  // With the shape function gone it falls back to a round map, on the full radius.
+  vm.run('GetMinimapShape = nil; Minimap:SetSize(200, 200); WoWAIDB.settings.mapAngle = 225; WoWAI.PlaceMapButton()');
+  assert.equal(vm.evaluate('WoWAIMapButton.shown'), 'true');
+  x = Number(vm.evaluate('WoWAIMapButton.x'));
+  assert.ok(Math.abs(x - (-Math.SQRT1_2 * 105)) < 0.01, `follows the new size on the round fallback, x=${x} expected ${-Math.SQRT1_2 * 105}`);
+});

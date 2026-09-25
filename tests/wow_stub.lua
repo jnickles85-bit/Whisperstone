@@ -57,8 +57,15 @@ function Methods.GetStringHeight(self) return 14 end
 function Methods.GetStringWidth(self) return 100 end
 function Methods.GetFontString(self) return self end
 function Methods.GetPoint(self) return "CENTER", nil, "CENTER", 0, 0 end
+-- Minimap placement: the button reads the minimap's centre, size and scale, and
+-- the cursor position while it is dragged.
+function Methods.GetCenter(self) return self.centerX or 0, self.centerY or 0 end
+function Methods.GetEffectiveScale(self) return self.scale or 1 end
+function Methods.GetLeft(self) return (self.centerX or 0) - (self.width or 0) / 2 end
+function Methods.GetTop(self) return (self.centerY or 0) + (self.height or 0) / 2 end
 function Methods.SetPoint(self, point, rel, relPoint, x, y)
 	if type(rel) == "number" then x, y = rel, relPoint end
+	self.point, self.rel, self.relPoint = point, rel, relPoint
 	self.x, self.y = x or 0, y or 0
 end
 function Methods.GetVerticalScrollRange(self) return 0 end
@@ -128,6 +135,14 @@ function STUB.Tick()
 end
 
 UIParent = CreateFrame("Frame", "UIParent")
+-- Blizzard's minimap: 140x140 by default, placed at a known point so the
+-- button's maths can be checked exactly.
+Minimap = CreateFrame("Frame", "Minimap")
+Minimap:SetSize(140, 140)
+Minimap.centerX, Minimap.centerY = 500, 500
+-- The shape the client reports; "ROUND" unless a test says otherwise.
+function GetMinimapShape() return STUB.minimapShape or "ROUND" end
+function GetCursorPosition() return STUB.cursorX or 0, STUB.cursorY or 0 end
 GameTooltip = CreateFrame("Frame", "GameTooltip")
 UIErrorsFrame = CreateFrame("Frame", "UIErrorsFrame")
 ChatFontNormal = {}

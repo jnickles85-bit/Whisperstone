@@ -199,6 +199,9 @@ local function InitDB()
 	s.cwd = s.cwd or DEFAULT_CWD
 	s.width = s.width or 780
 	s.height = s.height or 500
+	-- Where the minimap button sits, as an angle around the minimap's centre.
+	-- Kept here so it survives a /reload and a relog like the window's own state.
+	if type(s.mapAngle) ~= "number" then s.mapAngle = 225 end
 	db.lastSeq = db.lastSeq or 0
 	-- Chats deleted in game that the bridge hasn't confirmed forgetting yet.
 	db.forget = db.forget or {}
@@ -2531,11 +2534,160 @@ function WoWAI.Minimize(mini)
 end
 
 ---------------------------------------------------------------------------
+-- Minimap button
+---------------------------------------------------------------------------
+
+-- The addon's on-screen entry point: a small button on the minimap that toggles
+-- the window, so opening it does not mean remembering a slash command.
+--
+-- Hand-rolled rather than vendoring LibDBIcon-1.0: that library wants LibStub,
+-- LibDataBroker-1.1 and CallbackHandler-1.0 beside it (three more files for
+-- setup.js to copy) to draw one button. The placement maths is the same idea
+-- LibDBIcon uses - keep an angle around the minimap's centre and put the button
+-- on that radius - so dragging along the edge behaves the way minimap buttons
+-- are expected to.
+local MAP_RADIUS = 5 -- how far outside the minimap's edge the button sits, in pixels
+local MAP_DEFAULT_ANGLE = 225 -- bottom-left: out of the way of Blizzard's own buttons
+
+-- A round minimap puts the button on the circle; a square-ish one would let it
+-- poke off a corner, so there the diagonal is clamped instead. Only the shapes
+-- this client's minimap can report.
+local MAP_SHAPES = {
+	ROUND = { true, true, true, true },
+	SQUARE = { false, false, false, false },
+	["CORNER-TOPLEFT"] = { false, false, false, true },
+	["CORNER-TOPRIGHT"] = { false, false, true, false },
+	["CORNER-BOTTOMLEFT"] = { false, true, false, false },
+	["CORNER-BOTTOMRIGHT"] = { true, false, false, false },
+	["SIDE-LEFT"] = { false, true, false, true },
+	["SIDE-RIGHT"] = { true, false, true, false },
+	["SIDE-TOP"] = { false, false, true, true },
+	["SIDE-BOTTOM"] = { true, true, false, false },
+}
+
+-- math.atan2 is in the client's Lua 5.1; where it is gone (the test VM runs
+-- Lua 5.3) the two-argument math.atan is the same function.
+local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
+
+local function MapButtonAngle()
+	local s = db and db.settings
+	local angle = s and s.mapAngle
+	if type(angle) ~= "number" then return MAP_DEFAULT_ANGLE end
+	return angle
+end
+
+-- Put the button on the minimap's edge at the saved angle. Deliberately reads
+-- every value defensively: another addon may have resized or reshaped the
+-- minimap, and this must never throw on login or on a reload.
+local function PlaceMapButton()
+	local b = ui.mapBtn
+	if not b or not Minimap then return end
+	local angle = math.rad(MapButtonAngle())
+	local x, y = math.cos(angle), math.sin(angle)
+	-- A minimap that has not been sized yet (or one another addon has broken)
+	-- reports nil or 0 here; fall back to a stock size instead of a 0-radius
+	-- button sitting on the middle of the map.
+	local mw, mh = Minimap:GetWidth(), Minimap:GetHeight()
+	if type(mw) ~= "number" or mw <= 0 then mw = 140 end
+	if type(mh) ~= "number" or mh <= 0 then mh = 140 end
+	local w, h = mw / 2 + MAP_RADIUS, mh / 2 + MAP_RADIUS
+	-- Which quadrant the angle falls in decides whether the button may sit on the
+	-- full radius (a round edge) or has to be pulled in to the diagonal (a corner).
+	local q = 1
+	if x < 0 then q = q + 1 end
+	if y > 0 then q = q + 2 end
+	local shape = (GetMinimapShape and GetMinimapShape()) or "ROUND"
+	local quad = MAP_SHAPES[shape] or MAP_SHAPES.ROUND
+	if quad[q] then
+		x, y = x * w, y * h
+	else
+		local dw, dh = math.sqrt(2 * w * w) - 10, math.sqrt(2 * h * h) - 10
+		x = math.max(-w, math.min(x * dw, w))
+		y = math.max(-h, math.min(y * dh, h))
+	end
+	b:ClearAllPoints()
+	b:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+-- While the button is held, follow the cursor around the minimap and save the
+-- angle on every step, so a /reload or a relog lands it back where it was left.
+local function MapButtonOnUpdate()
+	if not db or not db.settings or not Minimap then return end
+	local mx, my = Minimap:GetCenter()
+	local px, py = GetCursorPosition()
+	local scale = Minimap:GetEffectiveScale()
+	if not (mx and my and px and py) or not scale or scale == 0 then return end
+	px, py = px / scale, py / scale
+	db.settings.mapAngle = math.deg(atan2(py - my, px - mx)) % 360
+	PlaceMapButton()
+end
+
+local function BuildMinimapButton()
+	if ui.mapBtn or not Minimap then return end -- built already, or nothing to hang it on
+	local b = CreateFrame("Button", "WoWAIMapButton", Minimap)
+	ui.mapBtn = b
+	b:SetSize(31, 31)
+	-- Other addons move the minimap between strata; pin ours so it cannot be
+	-- buried. It stays a child of Minimap, so it shows, hides and moves with it.
+	-- Guarded: SetFixedFrame* is what LibDBIcon relies on too, but a client
+	-- without it must not turn the addon's login into a Lua error.
+	b:SetFrameStrata("MEDIUM")
+	b:SetFrameLevel(8)
+	if b.SetFixedFrameStrata then b:SetFixedFrameStrata(true) end
+	if b.SetFixedFrameLevel then b:SetFixedFrameLevel(true) end
+	b:RegisterForClicks("anyUp")
+	b:RegisterForDrag("LeftButton")
+
+	local overlay = b:CreateTexture(nil, "OVERLAY")
+	overlay:SetSize(50, 50)
+	overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+	overlay:SetPoint("TOPLEFT", b, "TOPLEFT")
+
+	local background = b:CreateTexture(nil, "BACKGROUND")
+	background:SetSize(24, 24)
+	background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+	background:SetPoint("CENTER", b, "CENTER")
+
+	-- Blizzard's placeholder icon: shipped by every client, so the button is
+	-- never a blank square whatever else is installed.
+	local icon = b:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(18, 18)
+	icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+	icon:SetPoint("CENTER", b, "CENTER")
+
+	b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+	b:SetScript("OnClick", function() WoWAI.Toggle() end)
+	b:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+		GameTooltip:SetText("WoW AI")
+		GameTooltip:AddLine("Click to open or close the chat window.", 1, 1, 1, true)
+		GameTooltip:AddLine("Drag around the minimap to move it.", 0.8, 0.8, 0.8, true)
+		GameTooltip:Show()
+	end)
+	b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	b:SetScript("OnDragStart", function() b:SetScript("OnUpdate", MapButtonOnUpdate) end)
+	b:SetScript("OnDragStop", function()
+		b:SetScript("OnUpdate", nil)
+		PlaceMapButton() -- settle exactly on the last angle that was saved
+	end)
+
+	PlaceMapButton()
+	-- Another addon can resize the minimap after login (or it may not have its
+	-- size yet), so place it once more on the next frame.
+	if C_Timer and C_Timer.After then C_Timer.After(0, PlaceMapButton) end
+end
+
+-- Exposed so the button can be re-placed after the minimap changes underneath
+-- it (a shape/size addon loading late) without rebuilding the frame.
+WoWAI.PlaceMapButton = function() PlaceMapButton() end
+
+---------------------------------------------------------------------------
 -- Slash commands
 ---------------------------------------------------------------------------
 
 local HELP = table.concat({
-	"/wow-ai                        toggle the window (/ai, /wowai and the old /wow-claude are the same command)",
+	"/wow-ai                        toggle the window (/ai, /wowai and the old /wow-claude are the same command); the minimap button does the same",
 	"/wow-ai mini                   collapse to the small bar (click the bar to expand)",
 	"/wow-ai hide                   hide the window completely",
 	"/ai <text>                         send <text> to the current chat straight from the game chat box (/wow-ai <text> too). A message that starts with a command word is still sent when the rest of the line doesn't fit that command",
@@ -2823,6 +2975,7 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 	elseif event == "PLAYER_LOGIN" then
 		if not db then InitDB() end
 		BuildUI()
+		BuildMinimapButton()
 		run = { outbound = {} }
 		SelfTestSignals()
 		ProcessInbox()
