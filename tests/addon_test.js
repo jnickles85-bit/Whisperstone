@@ -472,6 +472,101 @@ test('the game context sends what is worn and what is in the bags, with the API 
   console.log(`      context block: ${bytes} bytes of 700 (slack ${700 - bytes}); the two inventory lines cost ${wornBytes + bagBytes + 2}`);
 });
 
+test('a profession tool is not a bag upgrade, and the line says so without leaving anything out', () => {
+  const vm = newVM();
+
+  // THE TOKEN QUESTION, answered from evidence rather than from the name it looks like it should
+  // have. The client does enumerate a dedicated InventoryType for profession gear --
+  // IndexProfessionToolType = 29, IndexProfessionGearType = 30
+  // (Blizzard_APIDocumentationGenerated/ItemConstantsDocumentation.lua:218-219) -- and both tokens
+  // exist in the client's own string table (INVTYPE_PROFESSION_TOOL, INVTYPE_PROFESSION_GEAR, at
+  // wowb-strings.txt offsets 988443/988446). But that is NOT the token the live client returned for
+  // the two items this card is about, and the fixture below reproduces what it actually returned.
+  //
+  // The measured line (bridge/state.json) was:
+  //   Bags: 2 of 29 items wearable -- Main Hand Blacksmith Hammer(C), Main Hand Mining Pick(C)
+  // "Main Hand" is rendered by exactly one key in EQUIP_LOC -- INVTYPE_WEAPONMAINHAND -- so the
+  // equip location the client reported for both tools was the ORDINARY weapon one. Matching a
+  // profession token would therefore never have excluded them, and a fix written that way would
+  // have been green in a stub while doing nothing in game. Blizzard's own profession probe agrees
+  // about which field it inspects: `invType == "INVTYPE_PROFESSION_TOOL"` against the equip
+  // location (Blizzard_Tutorials/Blizzard_Tutorials_Professions.lua:112) -- the same unusable
+  // field. The discriminator used here is the item's class pair instead.
+  //
+  // The fixture carries the real location AND the real class pair for each tool, so the test
+  // cannot pass via a missing location.
+  assert.equal(vm.evaluate('STUB.equipLoc[2901]'), 'INVTYPE_WEAPONMAINHAND', 'a Mining Pick reports the ordinary weapon location, not a profession one');
+  assert.equal(vm.evaluate('STUB.equipLoc[5956]'), 'INVTYPE_WEAPONMAINHAND', 'so does a Blacksmith Hammer');
+  // ...and that location alone maps to a slot, which is exactly why the old line listed them.
+  assert.equal(vm.evaluate('STUB.itemClass[2901][1] .. "/" .. STUB.itemClass[2901][2]'), '2/14', 'the tool is weapon/Miscellaneous (Enum.ItemClass.Weapon=2, Enum.ItemWeaponSubclass.Generic=14)');
+
+  login(vm);
+
+  // CRITERION 1: a profession tool in a bag is NOT listed, and the count is reported without it.
+  // One tool plus one real item in a two-slot bag: the honest answer is 1 of 2, not 2 of 2.
+  vm.run('STUB.bags = { [0] = { { id = 2901, name = "Mining Pick", quality = 1 }, { id = 1121, name = "Footpad\'s Shoes", quality = 2 } } }; STUB.bagSlots = { [0] = 2 }');
+  const toolAndGear = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(toolAndGear, "Bags: 1 of 2 items wearable -- Feet Footpad's Shoes(U)",
+    `the tool is left out and the count excludes it: ${toolAndGear}`);
+  assert.ok(!toolAndGear.includes('Mining Pick'), 'the profession tool is not offered as an upgrade');
+
+  // CRITERION 2: real gear is still listed normally -- the whole point of the line, so this
+  // asserts the pre-existing detection rather than tolerating its loss. The shoes and the buckler
+  // and both swords survive with their slots; only the tools are gone.
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
+  const gearOnly = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(gearOnly, "Bags: 4 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Off Hand Dented Buckler(C), Weapon Fine Longsword(U)",
+    'upgrade detection is unchanged for real gear');
+  assert.ok(gearOnly.includes("Feet Footpad's Shoes(U)"), 'a real armor upgrade is still listed');
+  assert.ok(gearOnly.includes('Off Hand Dented Buckler(C)'), 'so is a shield');
+  assert.ok(gearOnly.includes('Weapon Fine Longsword(U)'), 'so is a weapon');
+
+  // CRITERION 3: bags holding ONLY profession tools read as the honest empty answer, and the line
+  // is PRESENT rather than dropped. This is the live character's case verbatim -- two tools, no
+  // gear -- and "nothing in your bags is gear" is a real answer, not a missing one.
+  vm.run('STUB.bags = { [0] = { { id = 2901, name = "Mining Pick", quality = 1 }, { id = 5956, name = "Blacksmith Hammer", quality = 1 } } }; STUB.bagSlots = { [0] = 2 }');
+  const toolsOnly = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(toolsOnly, 'Bags: 0 of 2 items wearable',
+    `the honest empty answer, stated rather than omitted: ${toolsOnly}`);
+  assert.ok(toolsOnly !== undefined, 'the line survives -- an empty answer is not an absent one');
+  assert.ok(!/Bags: 0 of 2 items wearable --/.test(toolsOnly), 'and carries no dangling separator');
+  assert.ok(!toolsOnly.includes('Mining Pick') && !toolsOnly.includes('Blacksmith'), 'neither tool is offered');
+
+  // The discriminator is the CLASS PAIR, isolated: the same item id, the same equip location, with
+  // only the pair changed. If the exclusion were keyed on the location -- or on anything else --
+  // these three would not differ, so this is what proves which field does the work.
+  vm.run('STUB.equipLoc[9999] = "INVTYPE_WEAPONMAINHAND"');
+  vm.run('STUB.bags = { [0] = { { id = 9999, name = "Mystery Blade", quality = 2 } } }; STUB.bagSlots = { [0] = 1 }');
+  const unclassified = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(unclassified, 'Bags: 1 of 1 items wearable -- Main Hand Mystery Blade(U)',
+    `a location with no class pair stays listed -- an unreadable classification is not a filter: ${unclassified}`);
+  vm.run('STUB.itemClass[9999] = { 2, 14 }');
+  assert.equal(vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: ')), 'Bags: 0 of 1 items wearable',
+    'the same item, same location, classed weapon/Miscellaneous, is excluded');
+  vm.run('STUB.itemClass[9999] = { 2, 7 }');
+  assert.equal(vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: ')), 'Bags: 1 of 1 items wearable -- Main Hand Mystery Blade(U)',
+    'the same item, same location, classed weapon/sword, is listed again');
+
+  // A pair the client refuses to give (a secret) is the same as no pair: the item stays listed,
+  // because dropping gear on an unreadable read would be the fabricated-absence failure this file
+  // refuses everywhere else.
+  vm.run('STUB.itemClass[9999] = { STUB.secret, STUB.secret }');
+  assert.equal(vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: ')), 'Bags: 1 of 1 items wearable -- Main Hand Mystery Blade(U)',
+    'a secret class pair is unreadable, not a positive profession match');
+
+  // The other half of the inventory answer is untouched: what is WORN is not filtered, because the
+  // Worn line names equipment slots the player actually filled, not candidates.
+  vm.run('STUB.itemClass[9999] = nil; STUB.equipLoc[9999] = nil');
+  const wornLine = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Worn: '));
+  assert.ok(/^Worn: Head Worn Helm\(P\)/.test(wornLine), `the Worn line is unaffected: ${wornLine}`);
+
+  // The block still fits, with the filter in place.
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
+  const full = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(Buffer.byteLength(full, 'utf8') < 700, `context is ${Buffer.byteLength(full, 'utf8')} bytes, under CONTEXT_MAX (700)`);
+  console.log(`      profession-tool answer: "${toolsOnly}"  (was "2 of 29 ... Main Hand Mining Pick(C)")`);
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);

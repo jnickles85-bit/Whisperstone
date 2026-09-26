@@ -1011,6 +1011,25 @@ end
 -- Cosmetics (INVTYPE_BODY, INVTYPE_TABARD) and the non-equipment tokens are
 -- deliberately absent: a shirt or a tabard can never be an upgrade, so an item
 -- that maps to nil is left out of the list rather than flagged as a candidate.
+--
+-- The profession InventoryTypes are absent for that same reason. The client
+-- enumerates them -- IndexProfessionToolType = 29, IndexProfessionGearType = 30
+-- (Blizzard_APIDocumentationGenerated/ItemConstantsDocumentation.lua:218-219) --
+-- and their tokens exist in the client's own string table (INVTYPE_PROFESSION_TOOL,
+-- INVTYPE_PROFESSION_GEAR), so a profession tool reads as nil here and is left out
+-- without any extra code.
+--
+-- That is NOT what fixes the bag line, though, and this is measured rather than
+-- assumed: the two tools the live character reported -- "Main Hand Blacksmith
+-- Hammer(C), Main Hand Mining Pick(C)" in bridge/state.json -- did not come back
+-- from the client with a profession token at all. "Main Hand" is rendered by
+-- exactly one key in this table (INVTYPE_WEAPONMAINHAND, the single "Main Hand"
+-- value below), so the token the client actually returned for both items was the
+-- ordinary weapon one. Blizzard's own profession probe agrees about the field it
+-- is on: its only live test of a profession tool is `invType == "INVTYPE_PROFESSION_TOOL"`
+-- against the equip location (Blizzard_Tutorials/Blizzard_Tutorials_Professions.lua:112).
+-- So the equip location cannot separate a Mining Pick from a sword, and the
+-- discriminator has to be the item's class pair instead -- see MiscWeapon below.
 local EQUIP_LOC = {
 	INVTYPE_HEAD = "Head", INVTYPE_NECK = "Neck", INVTYPE_SHOULDER = "Shoulder",
 	INVTYPE_CHEST = "Chest", INVTYPE_ROBE = "Chest", INVTYPE_WAIST = "Waist",
@@ -1022,6 +1041,37 @@ local EQUIP_LOC = {
 	INVTYPE_RANGED = "Ranged", INVTYPE_RANGEDRIGHT = "Ranged",
 	INVTYPE_THROWN = "Ranged", INVTYPE_RELIC = "Ranged",
 }
+
+-- The client's own class pair for the bucket that holds profession tools, and the
+-- only thing that actually separates a Mining Pick from a sword -- the equip location
+-- above cannot, because the live client reports both as Main Hand (see the note above).
+-- Numeric, not the sub-type string: the pair comes back from the same call that already
+-- supplies the equip location (Blizzard_APIDocumentationGenerated/ItemDocumentation.lua:676-677,
+-- destructured exactly this way by camelot's own character sheet at
+-- Camelot/PaperDollFrameStats.lua:637), and a number does not change with the client's locale
+-- the way itemSubType ("Miscellaneous") does.
+--
+-- Enum values, read from the client's own enumeration rather than remembered:
+-- Enum.ItemClass.Weapon = 2 (ItemConstantsDocumentation.lua:278) and
+-- Enum.ItemWeaponSubclass.Generic = 14 (ItemConstantsDocumentation.lua:639), whose
+-- sub-type name is "Miscellaneous". Blizzard's own item data describes this bucket as
+-- the profession-tool one, and every item the project's corpus places in it is a tool:
+-- Mining Pick (2901), Blacksmith Hammer (5956), Skinning Knife (7005), Arclight Spanner
+-- (6219), Ryedol's Lucky Pick (4616). A weapon in this bucket has no weapon skill line
+-- either -- WEAPON_SUBCLASS_TO_SKILL_ID (Camelot/PaperDollFrameStats.lua:23-37) has no
+-- entry for Generic -- which is the same fact from the other side: it is not a weapon
+-- a character progresses, so it can never be the upgrade the Bags line is hunting.
+local MISC_WEAPON_CLASS, MISC_WEAPON_SUBCLASS = 2, 14
+
+-- Whether the client's class pair puts this item in the profession-tool bucket. Only a
+-- POSITIVE identification suppresses an item: a client that does not return the pair at
+-- all (both nil) leaves the item listed as before, so an unreadable classification costs
+-- nothing rather than inventing a filter. That is the same rule the rest of this file
+-- follows, in the one place where the safe direction is to keep what was already read
+-- rather than to drop it.
+local function MiscWeapon(classID, subclassID)
+	return Plain(classID) == MISC_WEAPON_CLASS and Plain(subclassID) == MISC_WEAPON_SUBCLASS
+end
 
 -- The equipped slots an item can be compared in, in the client's own numbering:
 -- INVSLOT_HEAD = 1 .. INVSLOT_TABARD = 19 (Blizzard_FrameXMLBase/Constants.lua:136-156).
@@ -1063,10 +1113,17 @@ end
 -- The wear slot an item id belongs to, or nil when the client cannot say or the
 -- item is not wearable. GetItemInfoInstant is the variant that does not need the
 -- item's data cached, which is why it is the one used here.
+--
+-- A profession tool reads as nil too, and it has to be excluded on its class pair rather
+-- than its equip location: the live client reports a Mining Pick's location as the ordinary
+-- weapon token, so EQUIP_LOC alone maps it to a slot (see the note above the table). The
+-- pair is taken from the same call, which is what camelot's own character sheet destructures
+-- for exactly this purpose (Camelot/PaperDollFrameStats.lua:637).
 local function EquipSlot(itemID)
 	if type(itemID) ~= "number" then return nil end
-	local _, _, _, loc = Try(C_Item and C_Item.GetItemInfoInstant, itemID)
+	local _, _, _, loc, _, classID, subclassID = Try(C_Item and C_Item.GetItemInfoInstant, itemID)
 	if type(loc) ~= "string" then return nil end
+	if MiscWeapon(classID, subclassID) then return nil end
 	return EQUIP_LOC[loc]
 end
 

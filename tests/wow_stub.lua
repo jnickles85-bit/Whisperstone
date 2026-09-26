@@ -419,7 +419,38 @@ STUB.equipLoc = {
 	[1166] = "INVTYPE_SHIELD",
 	[1009] = "INVTYPE_NON_EQUIP_IGNORE",
 	[2589] = "INVTYPE_NON_EQUIP_IGNORE",
+	-- Profession tools. Their equip location is the ORDINARY weapon token, not a profession
+	-- one: that is what the live client reported for the character on this card ("Main Hand
+	-- Blacksmith Hammer(C), Main Hand Mining Pick(C)" in bridge/state.json), and it is why the
+	-- location cannot be the discriminator. Without these two the profession-tool test below
+	-- would pass for the wrong reason -- the items would read as nil via a missing location
+	-- rather than via the class pair that actually separates them in game.
+	[2901] = "INVTYPE_WEAPONMAINHAND",
+	[5956] = "INVTYPE_WEAPONMAINHAND",
 }
+-- The class pair the same call returns AFTER the equip location -- the 6th and 7th values
+-- (Blizzard_APIDocumentationGenerated/ItemDocumentation.lua:676-677), which camelot's own
+-- character sheet destructures for exactly this purpose (Camelot/PaperDollFrameStats.lua:637).
+-- Values are the client's own enum members, read from its enumeration rather than chosen here:
+-- Enum.ItemClass.Weapon = 2, .Armor = 4, .Tradegoods = 7 (ItemConstantsDocumentation.lua:278,280,284);
+-- Enum.ItemWeaponSubclass.Sword1H = 7, .Generic = 14 (ItemConstantsDocumentation.lua:632,639);
+-- Enum.ItemArmorSubclass.Leather = 2, .Shield = 6 (ItemConstantsDocumentation.lua:236,240).
+--
+-- Generic (14) is the bucket the project's own item corpus puts every profession tool in --
+-- Mining Pick, Blacksmith Hammer, Skinning Knife, Arclight Spanner, Ryedol's Lucky Pick -- and
+-- it is the pair the bag line keys on. It is ALSO why the harness cannot default every item to
+-- one class pair and still test anything: the pair is the whole discriminator.
+STUB.itemClass = {
+	[2140] = { 2, 7 },   -- Fine Longsword: weapon, sword
+	[1121] = { 4, 2 },   -- Footpad's Shoes: armor, leather
+	[1166] = { 4, 6 },   -- Dented Buckler: armor, shield
+	[1009] = { 7, 5 },   -- Linen Cloth: trade goods, cloth
+	[2589] = { 7, 5 },   -- Linen Cloth: trade goods, cloth
+	[2901] = { 2, 14 },  -- Mining Pick: weapon, Miscellaneous -- the profession-tool bucket
+	[5956] = { 2, 14 },  -- Blacksmith Hammer: weapon, Miscellaneous
+	[7005] = { 2, 14 },  -- Skinning Knife: weapon, Miscellaneous
+}
+STUB_ITEM_CLASS = STUB.itemClass
 C_Container = {
 	GetContainerNumSlots = function(bag) return STUB.bagSlots[bag] or 0 end,
 	GetContainerItemInfo = function(bag, slot)
@@ -470,7 +501,14 @@ C_Item = {
 		if type(id) ~= "number" then return nil end
 		local loc = STUB.equipLoc[id]
 		if not loc then return nil end
-		return id, "Armor", "", loc, 134400, 4, 0
+		-- classID and subclassID are the 6th and 7th returns, after the equip location and the
+		-- icon. They are what tells a profession tool (weapon/Miscellaneous) from a real weapon,
+		-- and they are deliberately NOT defaulted: an id with no entry in STUB.itemClass returns
+		-- both as nil, which is the state a client that will not classify an item produces.
+		local pair = STUB.itemClass[id]
+		local classID = pair and pair[1] or nil
+		local subclassID = pair and pair[2] or nil
+		return id, "Armor", "", loc, 134400, classID, subclassID
 	end,
 }
 function print(...)
