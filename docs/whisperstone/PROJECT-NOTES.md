@@ -63,24 +63,47 @@ no game client, so it is a repeatable regression gate for the whole
 *bridge → slots → signal* chain.
 
 **The addon loads in the real client.** `WTF/Account/<id>/SavedVariables/WoWAI.lua` is
-written by the addon's own logout handler — its existence is hard proof the addon ran.
-Installed addon is byte-current with repo `HEAD`:
+written by the addon's own logout handler — its existence is hard proof the addon ran. The
+addon and the slot pool are installed:
 
 ```
-$ sha256sum addon/WoWAI/WoWAI.lua
-73b03c0a894d8a9f56226e17510cdc484baf2affca8e8778ff3132a849fcba6c  addon/WoWAI/WoWAI.lua
-$ sha256sum ".../Interface/AddOns/WoWAI/WoWAI.lua"
-73b03c0a894d8a9f56226e17510cdc484baf2affca8e8778ff3132a849fcba6c  .../AddOns/WoWAI/WoWAI.lua
 $ grep -n Interface addon/WoWAI/WoWAI.toc
 1:## Interface: 16001
 $ ls -d ".../Interface/AddOns/"WoWAI_S* | wc -l
 200
 $ grep -l WoWAI ".../WTF/Account/<id>/70"/*/AddOns.txt | wc -l   # enabled characters
 8
+$ grep -n lastAddonVersion ".../_classic_beta_/WTF/Config.wtf"
+132:SET lastAddonVersion "16001"
 ```
 
-(`Codec.lua` and `WoWAI.toc` also match the installed copies, hashes `ae432db4…` and
-`d615ec6f…`. `Inbox.lua` is bridge-owned at runtime and is not compared.)
+**"Installed" is not "live" — the drift check, and why it exists.** An earlier version of this
+note said the installed addon was *byte-current with repo `HEAD`*. That was true when written
+and is **not** safe to assume: an addon change needs **both** a reinstall **and** a client
+reload, and this client had been logged in since 15:41 — hours older than the change. So a
+`done` card did **not** imply the fix was running. The check is cheap, and it caught a real
+false-live (the professions fix was committed and absent from the installed copy). Compare each
+file's sha256 against its installed copy, and the client's process start time against the
+install mtime:
+
+```
+$ sha256sum addon/WoWAI/WoWAI.lua addon/WoWAI/WoWAI.toc addon/WoWAI/Codec.lua
+4ddcc9a701d570f1e918f54807b3da9ce0f93832fc944933866e08d580dc5c86  addon/WoWAI/WoWAI.lua
+d615ec6f58e7981c760db8fde0584e6be15e40ab8aeeb523cc4fc906d6314894  addon/WoWAI/WoWAI.toc
+ae432db4505e60dc3cefbb8d33e180c66c6800fafce0bedf1e69929a2bff1ec8  addon/WoWAI/Codec.lua
+$ sha256sum ".../AddOns/WoWAI/WoWAI.lua" ".../AddOns/WoWAI/WoWAI.toc" ".../AddOns/WoWAI/Codec.lua"
+d6c44e16244c278b751a1def63a5939be05c33abd967171126a5ed62014af630  .../WoWAI.lua   ← DIFFERS
+d615ec6f58e7981c760db8fde0584e6be15e40ab8aeeb523cc4fc906d6314894  .../WoWAI.toc   ← MATCH
+ae432db4505e60dc3cefbb8d33e180c66c6800fafce0bedf1e69929a2bff1ec8  .../Codec.lua   ← MATCH
+$ diff <(git show d531eee:addon/WoWAI/WoWAI.lua) ".../AddOns/WoWAI/WoWAI.lua" | wc -l
+0
+```
+
+`WoWAI.lua` only, and the drift is **exactly one commit deep**: the installed copy is
+byte-identical to `HEAD~1` (`d531eee`), i.e. the bags work is committed but **not yet
+installed**. **`Inbox.lua` is deliberately excluded from every comparison** — the bridge
+rewrites it at runtime, so a mismatch there is expected and is **not** drift. Read the two
+hashes as "what is on disk" and "what the client loaded", never as one claim.
 
 **The in-game round-trip is PROVEN.** A message typed in the addon window reached the bridge
 over the pixel strip, ran a real agent, and the reply rendered back in the game. Verbatim from
@@ -130,22 +153,229 @@ The agent's own text still came back — that is why the bridge prefixes such a 
 run exits clean" are different claims with different evidence.
 
 **No `/reload` was needed between them — PROVEN.** Three chat messages travelled in one login
-session with no `/reload`. The evidence is a `grep -c` of the bridge's own hello log line over
-the whole file:
+session with no `/reload`. The evidence is a `grep -c` of the bridge's own hello log line,
+**scoped to the window that carried ids #3–#6** (`18:52:58Z`–`19:08:32Z`):
 
 ```
-$ grep -c 'hello from session' bridge/bridge.log
+$ awk '$0>="[2026-09-25T18:52:58" && $0<="[2026-09-25T19:08:33"' bridge/bridge.log | grep -c 'hello from session'
 1
-$ grep -n 'hello from session' bridge/bridge.log
+$ grep -n 'hello from session' bridge/bridge.log | head -3
 67:[2026-09-25T18:53:00.420Z] hello from session b5db4e4c439d8b
+659:[2026-09-25T19:42:04.287Z] hello from session b5db4e4c439d8b
+670:[2026-09-25T20:50:48.750Z] hello from session b5db4e4c439d8b
 ```
+
+**Do not repeat an earlier form of this proof that said `grep -c` over the whole file returns
+`1`.** It did when written; the file has kept growing and the same command now returns **9**.
+An unqualified whole-file count is a snapshot, not an invariant — scope it to the window, as
+above, or it will read as a falsehood to the next person who runs it.
 
 The addon sends that hello once at login and again on each `/reload` or **Connect** press
 (`WoWAI.SayHello`, throttled to one per 60 s) and the bridge logs one line per hello received.
-Exactly one hello appears across the entire session that carried ids #3–#6, so no `/reload` and
-no relog happened between them. The load-on-demand slot pool recycled correctly across all
-three: `sig`, `ack`, `act` 004, 005 and 006 are all present with the 124-byte payload, and the
-`act/` dirs for 004–006 were rebuilt during that window.
+Exactly one hello falls inside the #3–#6 window, and the next one is 34 minutes after #6
+finished, so no `/reload` and no relog happened between those three messages. The
+load-on-demand slot pool recycled correctly across all three: `sig`, `ack`, `act` 004, 005 and
+006 are all present with the 124-byte payload, and the `act/` dirs for 004–006 were rebuilt
+during that window.
+
+**A hello logged with no reply is by design, not a failure.** Later in the same session,
+messages **#10** and **#12** each logged `hello from session …` with **no** `Ara starting` line
+and no `done`/`error` line under them:
+
+```
+669:[2026-09-25T20:50:47.166Z] #10@b5db4e4c439d8b game context updated: Character: Longhairs on Classic Beta PvE, level 8 Windshaper Skyborne Rogue (Horde)
+670:[2026-09-25T20:50:48.750Z] hello from session b5db4e4c439d8b
+675:[2026-09-25T20:52:40.441Z] #12@b5db4e4c439d8b game context updated: Character: Longhairs on Classic Beta PvE, level 8 Windshaper Skyborne Rogue (Horde)
+676:[2026-09-25T20:52:42.038Z] hello from session b5db4e4c439d8b
+```
+
+That shape looks exactly like a message the bridge dropped. It is not. `bridge.js:409-419`
+acks a hello, may offer a restore, refreshes the slots and **returns before any agent run** —
+so a hello record *cannot* produce a reply. Recorded here so the next reader does not file it
+as a bug.
+
+---
+
+## Two characters, two zones — and a third that has since appeared
+
+**Multi-character operation is demonstrated, not just single-character.** Every record below
+travelled through the same addon session `b5db4e4c439d8b`. Counted over
+`bridge/bridge.log` at the time of writing (`grep -o 'game context updated: Character:
+[A-Za-z]*' bridge/bridge.log | sort | uniq -c`):
+
+```
+      8 game context updated: Character: Nous
+      8 game context updated: Character: Longhairs
+      1 game context updated: Character: Mightie
+```
+
+| Character | Reported as | Level in the log | Cite |
+|---|---|---|---|
+| `Nous` | Undead Warlock (Horde) | **9 ×7 → 10 ×1** | level 9: `bridge.log:66,69,74,78,658,661,665`; level 10: `bridge.log:672` |
+| `Longhairs` | Windshaper Skyborne Rogue (Horde) | **8 ×6 → 10 ×2** | level 8: `:669,675,678,681,685,689`; level 10: `:692,695` |
+| `Mightie` | Undead Paladin (Horde), level 17 | 17 ×1 | `bridge.log:700` |
+
+**`Nous` levelled 9 → 10 mid-session**, and the change is visible only as the Character line
+itself — `#11` at `20:52:01.092Z` (`bridge.log:672`) is the first record that says `level 10`
+where the seven before it said `level 9`. `Longhairs` went **8 → 10**, first at `#17`
+(`bridge.log:692`, `22:03:20.514Z`). Both characters therefore levelled inside **one addon
+session with no relog** — the strongest multi-character evidence this project has.
+
+**A second zone, and a second map id.** `Location: Zephras Isle - Falaath Village` with
+`Position: 49.0, 57.2 (map 2521)` — verbatim from the context block the bridge actually handed
+the agent (the addon's own text, stored as `context.text`):
+
+```
+Game: World of Warcraft: Forever (client 1.60.1.70009, interface 16001)
+Character: Longhairs on Classic Beta PvE, level 8 Windshaper Skyborne Rogue (Horde)
+Location: Zephras Isle - Falaath Village
+Position: 49.0, 57.2 (map 2521)
+Money: 22s 47c; XP: 3608/5400
+```
+
+For contrast, **Tirisfal Glades is map `1420`** (`PROJECT-NOTES.md`, the pre-change block) and
+The Barrens is `1413`; Zephras Isle is a map id this project had not seen. Note that
+`bridge/state.json` is **gitignored** (`.gitignore:3`) and is overwritten in place — a citation
+to it is a point-in-time reading, not something a reader can reproduce from git. The durable
+copy of the same string is the `[Context from the WoW AI bridge…]` block in the `game`
+profile's own message store (session `20260925_155203_6dfedb`).
+
+**The character the bridge holds as current moves, and it has moved again since this card was
+written.** At the time the card was drafted, `bridge/state.json` held `Longhairs` at Zephras
+Isle; by the time the card ran, it held a **third** character:
+
+```
+Character: Mightie on Classic Beta PvE, level 17 Undead Paladin (Horde)
+Location: The Barrens - The Crossroads
+Position: 52.0, 29.9 (map 1413)
+Money: 2g 27s 75c; XP: 9470/17700
+Stats: HP 422, Mana 564, Armor 1128, Str 43, Agi 29, Sta 45, Int 34, Spi 46
+Gear: 10 of 19 slots filled (9 empty)
+Talents: Paladin 0
+Professions: Blacksmithing 52/75, Mining 97/150, First Aid 42/75, Cooking 7/75
+```
+
+So the correct statement of scope is **three characters, three zones, one addon session** —
+`Nous` (Tirisfal Glades), `Longhairs` (Zephras Isle), `Mightie` (The Barrens). Treat the
+"current character" as a moving value and always read it from the live context, never from
+this note.
+
+### Corrections: three claims from an in-game summary that measurement refutes
+
+An in-game agent summarised the bridge state and got three things wrong. They are recorded
+here in the same shape as the Phase B "Recommended doc corrections" (`phase-b-l2-scoping.md:697`)
+— claim, then the measurement that refutes it — because the summary was persuasive and would
+otherwise be repeated.
+
+| Its claim | Measured reality |
+|---|---|
+| "Nous: **5** context updates" | **8** — `grep -cE 'game context updated: Character: Nous' bridge/bridge.log` → `8` |
+| "5711 to 5748 XP … **read from `bridge.log`**" | `5711` and `5748` each appear **0 times in `bridge.log`**. They are in `bridge/transcripts.json`, in the *agent's own prose* — not a log line the bridge wrote. |
+| "then a **level-up line**" | **No level-up line exists anywhere.** `grep -niE 'level.?up\|leveled\|ding' bridge/bridge.log` returns nothing. The level change shows up only as the Character line. |
+
+```
+$ grep -cE 'game context updated: Character: Nous' bridge/bridge.log
+8
+$ grep -c '5711' bridge/bridge.log; grep -c '5748' bridge/bridge.log
+0
+0
+$ grep -c '5711' bridge/transcripts.json; grep -c '5748' bridge/transcripts.json
+1
+1
+$ grep -niE 'level.?up|leveled|ding' bridge/bridge.log
+(no output)
+```
+
+**The load-bearing part is the third row for the XP one — the `bridge.js` line that logs the
+context logs *only* the Character line.** `bridge.js:346` builds `who` from the first
+`Character:` line of the context and nothing else:
+
+```
+$ sed -n '346p' bridge/bridge.js
+  log(`#${job.id}${job.session ? '@' + job.session : ''} game context ${text ? 'updated: ' + who : 'cleared'}`);
+```
+
+So `bridge.log` **never** contains Location, Position, Money, XP, Stats, Talents or
+Professions. Any claim of the form "I read the XP out of `bridge.log`" is false by
+construction, however the numbers were actually obtained. Location/zone/map and everything
+after the Character line live in `bridge/state.json` (and in the `game` profile's stored
+prompt); the counts live in `bridge/bridge.log`; the agent's *prose about* them lives in
+`bridge/transcripts.json`. Three different files — cite the right one.
+
+### Is `Windshaper Skyborne` / `Zephras Isle` real Forever content? — settled by Blizzard, not by the UI tree
+
+**This project's source-grep route cannot answer it, and earlier attempts to answer it from
+source went wrong in both directions.** Recorded because two separate over-reads happened here:
+
+- `Zephras`, `Falaath` and `Windshaper` return **0 files** in the Forever UI tree — **but so
+  does `Tirisfal`**, a definitely-real zone (`Tirisfal → 0`, `Skyborne → 4`, `SLASH_DUMP → 0`
+  in both local `wow-ui-source@forever` clones, `version.txt` = `1.60.1.70009`). The tree is
+  **not** where zone or race names live: the addon reads them from the client via
+  `UnitRace("player")`, `UnitClass("player")`, `GetZoneText()`, `GetSubZoneText()`
+  (`addon/WoWAI/WoWAI.lua:1248,1249,1263,1264`). So a tree grep proves **nothing** either way.
+- `Skyborne` **does** appear (4 files) — but only as `Enum.Bc26Experience.Skyborne` in
+  `Blizzard_Kiosk/BlizzCon2026/` (`Glue.lua`, `Utils.lua`, `ColdSwap.lua`,
+  `BlizzCon2026Documentation.lua`). That is a **kiosk experience label**; on its own it neither
+  confirms nor contradicts a Skyborne race. An earlier claim in this conversation that Skyborne
+  was "just a BlizzCon kiosk enum" was an **over-read and is not repeated**.
+
+**What actually settles it: Blizzard's own announcement, which is first-party and says both
+names outright.** The card expected this to stay *pending confirmation*; it does not, and the
+evidence is a published Blizzard article rather than an inference from this repo:
+
+> **Home/Starting Location: Zephras Isle  Level Range: 1-12  Faction: Horde (Windshaper
+> Skyborne) or Alliance (High Order Skyborne)**
+> — *WoW: Forever Meet the New Skyborne*, `news.blizzard.com/en-us/article/24302071/wow-forever-meet-the-new-skyborne`
+
+```
+$ web_extract https://news.blizzard.com/en-us/article/24302071/wow-forever-meet-the-new-skyborne
+→ "Zephras Isle serves as a new level 1–12 starting experience…"
+→ "#### (Horde) Windshaper Skyborne"  /  "#### (Alliance) High Order Skyborne"
+→ "Windshaper Skyborne: Druid, Hunter, Rogue, Shaman, Warrior"
+```
+
+`Longhairs` being a **Rogue** is consistent with that class list. Corroborated off Blizzard's
+own site too (`worldofwarcraft.blizzard.com/en-us/news/`, the article's forum thread, and a
+third-party write-up at `mmos.com`). So:
+
+| Question | Status |
+|---|---|
+| Are `Zephras Isle` and `Windshaper Skyborne` real Forever content? | **YES — first-party Blizzard announcement** (URL above). Not an inference from this repo. |
+| Did *this* client actually report them? | **Reported by the client, unverified by the `/wow-ai context` probe** — see below. |
+| Is the tree-grep "0 hits" meaningful? | **No.** `Tirisfal` is also 0. Retired as evidence. |
+
+**The probe has still never been run, and its output is not on disk.** `/wow-ai context` prints
+`WoWAI.GameContext()` verbatim (`addon/WoWAI/WoWAI.lua:3300-3313`; help text `:3175`), needs no
+bridge connection, and is the cheap way to confirm what the client itself reports. It was
+searched for and **not found** anywhere: no `Game context is ON` reply exists in
+`bridge/`, in the `game` profile's message store (`SELECT count(*) … LIKE '%Game context is
+ON%'` → `0`), in the agent's own store, or in the vault. **Do not describe the client's report
+as probe-confirmed.**
+
+**`/dump` and `/run` — an earlier statement that Forever defines neither is wrong, and the
+primer must not be edited on that basis.** Forever registers **both**: `SLASH_COMMAND.DUMP`
+via `SlashCommandUtil.CheckAddSlashCommand(... DEBUG_COMMAND ...)`
+(`Blizzard_ChatFrameBase/Shared/SlashCommands.lua:1385`) and `SLASH_COMMAND.SCRIPT` (= `/run`)
+at `:1180`. What is true is narrower and is why the probe route was chosen:
+
+- **Neither resolves by the alias-global route.** `SLASH_DUMP1` / `SLASH_RUN1` / `SLASH_SCRIPT1`
+  / `SLASH_ETRACE1` are **absent from the entire tree** (`→ 0`), and command resolution works by
+  `hash_SlashCmdList[command]` (`ChatFrameEditBox.lua:265`), built from the `SlashCmdList`
+  *keys* (`ImportListToHash`, `ChatFrameUtil.lua:794-813`, called at `:817`). So
+  `SLASH_DUMP = "DUMP"` never existed to find — **the absence of the `SLASH_*` global is not
+  evidence the command is absent.**
+- **Both are gated, not missing.** They are `DEBUG_COMMAND`-category, whose inclusion depends on
+  the active game mode (`SlashCommands.lua:274-276`: only `IsGMClient()` inserts
+  `DEBUG_COMMAND` into every mode's set). `/dump` additionally requires `AreDangerousScriptsAllowed()`
+  (it raises `DANGEROUS_SCRIPTS_WARNING`) and is skipped under `Kiosk.IsEnabled()` or
+  `C_AddOns.GetScriptsDisallowedForBeta()`; `/run` is skipped under `Kiosk.IsEnabled()`.
+
+The operational conclusion stands — **use `/wow-ai context`, since it needs no bridge and no
+gated command** — but the reason is *"debug commands are game-mode-gated and `/dump` needs
+dangerous scripts allowed"*, **not** *"Forever defines no `/dump`/`/run`"*. The primer
+(`docs/WOW-ADDON-PRIMER.md:80`) currently tells the agent to use `/dump` and `/run`; **that line
+was left untouched**, because the claim that would justify removing it did not survive
+measurement.
 
 **`--resume` carries context.** Measured, not assumed: a fresh session was told a word, then
 resumed, and recalled it. Session ids are stored per chat in `state.json`, so resuming
@@ -199,14 +429,16 @@ it is recorded as partial. **Next step 2 stays open.**
 `progress: ["$ echo WHISPERSTONE_TOOLTEST"]` and a real reply. `tool_use` events are surfaced
 as one readable line each; `tool_result` is deliberately silent.
 
-**Test suite:** `npm test` → **55 tests, 53 pass, 2 fail**. Both failures are **pre-existing
-upstream**, Windows-path-semantics assertions running on Linux (`D:\elsewhere` is not
-absolute to `path`; `path.basename` does not split on `\`). Upstream targets Windows/NTFS
+**Test suite:** `npm test` → **58 tests, 56 pass, 2 fail** (measured this run). Both failures
+are **pre-existing upstream**, Windows-path-semantics assertions running on Linux (`D:\elsewhere`
+is not absolute to `path`; `path.basename` does not split on `\`). Upstream targets Windows/NTFS
 with Windows-only CI. **Do not "fix" these by editing the tests** — a change there is
 untestable against the real target platform. (Baseline before the minimap work was 49 tests /
-47 pass / 2 fail; the minimap button added 5 tests and 5 passes, and the professions fix
-added 1 test and 1 pass — the two failures are unchanged in count and identity across all
-three.)
+47 pass / 2 fail; the minimap button added 5 tests and 5 passes, the professions fix added 1
+test and 1 pass, and the stat/bags work added 3 more — the two failures are unchanged in count
+and identity across all of them.) An earlier version of this note said **55 tests / 53 pass**;
+that was true when written and is now stale, because later cards added tests. Re-run `npm test`
+rather than trusting a count copied from this file.
 
 ---
 
@@ -258,7 +490,7 @@ renamed, capture stops.** That is config (`capture.enabled`), not code.
 | Tool-progress lines (`bridge/protocol.js`) | done, verified; Claude output asserted byte-identical |
 | Shipped default agent → `hermes` | done, verified |
 | Live test hardened into a real gate | done, verified |
-| Addon installed to the Forever beta | done — loads in game, byte-current |
+| Addon installed to the Forever beta | done — loads in game; **installed vs repo is a checked value, not an assumption** (see the drift check above) |
 | **In-game round-trip (a message actually travelling)** | **PROVEN in game** (2026-09-25; see above) |
 | Transport without `/reload` across several messages | **PROVEN** — three messages, one login session |
 | In-game turns pinned to the `game` profile | done — `-p game`, confirmed in the profile's own log |
@@ -367,6 +599,45 @@ covered by tests that fail against the old code: professions by `t_35f44ba8`, ta
 `t_481b5951`. **The `README` line is left as upstream's text** (it describes the addon's intent
 and the other clients) and is not touched by these cards.
 
+**Both lines are now PROVEN IN GAME — the harness-only caveat above is discharged.** The block
+the agent was actually handed at `#18` (`2026-09-25T22:03:29.974Z`) carries both, read from the
+`game` profile's stored prompt (session `20260925_180335_efe40f`):
+
+```
+Game: World of Warcraft: Forever (client 1.60.1.70009, interface 16001)
+Character: Longhairs on Classic Beta PvE, level 10 Windshaper Skyborne Rogue (Horde)
+Location: Zephras Isle - Gustberry Lowlands
+Position: 55.2, 75.8 (map 2521)
+Money: 41s 18c; XP: 262/7600
+Talents: Rogue 0
+Professions: Fishing 4/75, Cooking 1/75
+```
+
+These two lines had **never** appeared in this project's history before that run. Provenance is
+the two committed fixes: `068f21f` (professions, via `GetProfessions()` /
+`GetProfessionInfo(index)`) and `2bab866` (talents, via `C_SpecializationInfo`). The card's
+addendum recorded `Fishing 2/75` at ~17:3x; it reads **`4/75`** here, i.e. the value moved
+between readings — itself corroboration that this is a live client read and not a constant.
+
+- **`Talents: Rogue 0` is correct, not a fault — do not file it as a bug.** The code omits the
+  line only when the spec *index* is 0, the guard being
+  `if type(spec) == "number" and spec > 0 then` (`addon/WoWAI/WoWAI.lua:1401`, read at `:1402`).
+  Here the client **did** describe the spec — the name came back as `Rogue` — and returned
+  `pointsSpent = 0`, so the line was produced legitimately. The character has simply spent no
+  talent points yet. It is a genuine client read, not a fallback.
+- **OPEN QUESTION (not asserted): why the spec *name* is the CLASS name (`Rogue`) rather than a
+  tree name.** A class-specialization frame does exist at
+  `Blizzard_PlayerSpells/Camelot/ClassSpecializations/`, but the name source was not traced.
+  *Measured*: the client returned `Rogue` with 0 points. *Inference, do not assert*: Forever
+  names single specs after the class. **What settles it is a point spent** — the number should
+  then tick up past 0, and the name should be re-read at the same time.
+- **Fishing and Cooking are SECONDARY skills, and the old approach would have mishandled them.**
+  The retired code matched header strings against `TRADE_SKILLS` / `SECONDARY_SKILLS`, which is
+  locale-fragile; the category-based read (`GetProfessions()` → `GetProfessionInfo(index)`) got
+  both right on a client whose skill names are not the ones those tables assume. That is a point
+  in favour of the new approach, and it is why these two lines are evidence for the fix rather
+  than decoration.
+
 ---
 
 ## Next steps
@@ -392,12 +663,26 @@ observed, and the two "read it out of a file afterwards" checks below have both 
 
 **Still worth running, because they are different situations and neither has been tested:**
 
-- **Inside an instance.** The round-trip is proven in the open world (Tirisfal Glades) only.
-  Addon chat can be restricted on addon-restricted maps (dungeons/raids) and this has never been
-  tried on Forever. Get into a dungeon, `/wow-ai`, send, and report whether the reply arrives or
-  the strip never clears.
+- **Inside an instance.** The round-trip is proven in the open world only — and as of this
+  note in **three** open-world zones (`Tirisfal Glades` map 1420, `Zephras Isle` map 2521,
+  `The Barrens` map 1413). Addon chat can be restricted on addon-restricted maps
+  (dungeons/raids) and this has never been tried on Forever. Get into a dungeon, `/wow-ai`,
+  send, and report whether the reply arrives or the strip never clears.
 - **After a full relog.** A SavedVariables wipe is the other failure mode; a relog is the test
   for it, and it doubles as a clean check of the logout path.
+
+**1b. Run the two settling probes — both are cheap, in-game, and neither has been done.** The
+first closes the open question above; the second confirms what the client reports. Both need
+the game window and nothing else — no bridge connection.
+
+- **`/wow-ai context`** — prints `WoWAI.GameContext()` verbatim (`WoWAI.lua:3300-3313`). Record
+  its output as the confirmation of what the client reports (it is currently **unverified by
+  this probe** — see the Windshaper/Zephras section). Prefer this over `/dump`/`/run`, which are
+  game-mode-gated debug commands, not absent ones.
+- **Spend one talent point**, then re-read the `Talents:` line. The number should tick up past
+  `0`, and the spec *name* should be read at the same time. That single observation settles both
+  halves of the talents open question: whether the counter is live, and whether the name really
+  is the class name.
 
 **2. Verify the approval boundary with canaries — still OPEN.** Configuring is not verifying,
 and partial evidence does not close this. The test that settles it: a destructive command
