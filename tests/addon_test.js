@@ -144,8 +144,13 @@ test('the game context describes the character and rides on the hello, then only
     // wearable items in the bags. They are the two halves of "do I have an upgrade?", and the
     // order matters -- see the test named "the game context sends what is worn and what is in
     // the bags" for what each half is built from and why.
-    'Worn: Head Worn Helm(P), Neck Thick Necklace(C), Chest Sturdy Tunic(U), Waist Loose Belt(C), +3 more',
-    "Bags: 4 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Off Hand Dented Buckler(C), Weapon Fine Longsword(U)",
+    'Worn: Head Worn Helm(P), Neck Thick Necklace(C), Chest Sturdy Tunic(U), Waist Loose Belt(C), Legs Sturdy Leggings(U), Feet Worn Boots(C), +1 more',
+    // 3 of 7, not 4: the fixture character is a HUNTER, and the seventh item is a shield
+    // ("Off Hand Dented Buckler(C)"). A hunter cannot wear a shield, so the line no longer offers
+    // one -- see the test named "a bag candidate this character cannot wear is not an upgrade".
+    // The shield is still real gear with a real Off Hand slot; it is simply not gear for THIS
+    // character, which is the distinction the class-eligibility gate draws.
+    "Bags: 3 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Weapon Fine Longsword(U)",
     // Talents have a test of their own: the line is built from C_SpecializationInfo, because the
     // vanilla tab globals are not callable on Forever.
     'Talents: Beast Mastery 14',
@@ -365,11 +370,14 @@ test('the game context sends what is worn and what is in the bags, with the API 
   // Truncation is admitted, not hidden: a list cut short without a marker reads as the whole list.
   assert.ok(/Worn: .*, \+\d+ more/.test(ctx), `a truncated Worn list must say how many it is not showing: ${ctx}`);
   // The bags: the wearable items only, each labelled with the slot it competes for, and the counts
-  // of what was looked at and what was even a candidate.
-  assert.ok(ctx.includes('Bags: 4 of 7 items wearable'), ctx);
+  // of what was looked at and what was even a candidate. 3 of 7 because the fixture character is a
+  // Hunter: the Dented Buckler below is a shield, and a hunter may not wear one. Its exclusion is
+  // not this line's doing -- see "a bag candidate this character cannot wear is not an upgrade",
+  // which isolates the eligibility gate and shows the same shield listed for a warrior.
+  assert.ok(ctx.includes('Bags: 3 of 7 items wearable'), ctx);
   assert.ok(ctx.includes('Weapon Fine Longsword(U)'), ctx);
   assert.ok(ctx.includes("Feet Footpad's Shoes(U)"), 'the slot comes from the item, via GetItemInfoInstant');
-  assert.ok(ctx.includes('Off Hand Dented Buckler(C)'), 'a shield is an off-hand item');
+  assert.ok(!ctx.includes('Off Hand Dented Buckler(C)'), 'a shield is off-hand gear, but not for a hunter');
   assert.ok(!ctx.includes('Linen Cloth'), 'a non-wearable item is looked at but never listed as a candidate');
   assert.ok(!ctx.includes('nil'), `no field may be built from a nil return: ${ctx}`);
 
@@ -403,11 +411,11 @@ test('the game context sends what is worn and what is in the bags, with the API 
   // The client owns the bag range: an Enum.BagIndex reporting a different set is followed, so a
   // client that numbers its bags differently is read correctly instead of being read as empty.
   vm.run('Enum = { BagIndex = { Backpack = 0, Bag_1 = 1, Bag_2 = 2, Bag_3 = 3, Bag_4 = 4 } }');
-  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 4 of 7 items wearable'), 'the enum-defined range is walked');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 3 of 7 items wearable'), 'the enum-defined range is walked');
   vm.run('Enum = STUB_ENUM');
   // ...and with no readable enum the documented 0..4 range is the fallback, which is the same set.
   vm.run('Enum = nil');
-  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 4 of 7 items wearable'), '0..4 is the fallback, matching PLAYER_BAGS');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 3 of 7 items wearable'), '0..4 is the fallback, matching PLAYER_BAGS');
   vm.run('Enum = STUB_ENUM');
 
   // A slot the client will not describe contributes nothing rather than a guess: an item whose
@@ -511,14 +519,20 @@ test('a profession tool is not a bag upgrade, and the line says so without leavi
   assert.ok(!toolAndGear.includes('Mining Pick'), 'the profession tool is not offered as an upgrade');
 
   // CRITERION 2: real gear is still listed normally -- the whole point of the line, so this
-  // asserts the pre-existing detection rather than tolerating its loss. The shoes and the buckler
-  // and both swords survive with their slots; only the tools are gone.
+  // asserts the pre-existing detection rather than tolerating its loss. The shoes and both swords
+  // survive with their slots; only the tools are gone.
+  //
+  // The buckler that used to be in this string is gone too, and NOT because of anything this test
+  // is about: the fixture character is a Hunter and a hunter cannot wear a shield. That second
+  // filter is the subject of "a bag candidate this character cannot wear is not an upgrade", which
+  // also asserts the shield IS listed for a warrior -- so the exclusion is proved to be about the
+  // class and not about shields being dropped on sight. Keeping the shield here would make this
+  // test assert a line the client no longer produces.
   vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
   const gearOnly = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
-  assert.equal(gearOnly, "Bags: 4 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Off Hand Dented Buckler(C), Weapon Fine Longsword(U)",
+  assert.equal(gearOnly, "Bags: 3 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Weapon Fine Longsword(U)",
     'upgrade detection is unchanged for real gear');
   assert.ok(gearOnly.includes("Feet Footpad's Shoes(U)"), 'a real armor upgrade is still listed');
-  assert.ok(gearOnly.includes('Off Hand Dented Buckler(C)'), 'so is a shield');
   assert.ok(gearOnly.includes('Weapon Fine Longsword(U)'), 'so is a weapon');
 
   // CRITERION 3: bags holding ONLY profession tools read as the honest empty answer, and the line
@@ -565,6 +579,143 @@ test('a profession tool is not a bag upgrade, and the line says so without leavi
   const full = vm.evaluate('WoWAI.GameContext()');
   assert.ok(Buffer.byteLength(full, 'utf8') < 700, `context is ${Buffer.byteLength(full, 'utf8')} bytes, under CONTEXT_MAX (700)`);
   console.log(`      profession-tool answer: "${toolsOnly}"  (was "2 of 29 ... Main Hand Mining Pick(C)")`);
+});
+
+test('a bag candidate this character cannot wear is not an upgrade, and an unanswerable client costs nothing', () => {
+  const vm = newVM();
+
+  // THE PREDICATE, and why it is neither of the two the names suggest. Both of the obvious ones
+  // are on the ITEM namespace and both take an itemID, so both look right from the call site:
+  //
+  //   C_Item.IsEquippableItem(itemID) -- "does this item fit SOME equipment slot", statically. It
+  //   does not consider the player at all, so a shield on a Druid passes it. Filtering here would
+  //   have changed nothing.
+  //
+  //   C_Item.IsUsableItem(itemID) -- the trap, and the one that would have LOOKED like the fix. It
+  //   returns `usable, noMana` (ItemDocumentation.lua:1627-1641); the second return is the
+  //   giveaway that it is the item analog of IsSpellUsable -- "can I right-click USE this now" --
+  //   which is not an equip question. Blizzard's own UI keeps the two apart: camelot's paper doll
+  //   calls IsUsableItem for the gamepad Use action (Camelot/PaperDollFrame.lua:1818,
+  //   CONTEXT_ACTION_LABEL_USE) while the EQUIP action is gated by IsEquippableItem
+  //   (Mainline/ContainerFrame.lua:3123 vs :3143). A plain robe upgrade has no on-use spell, so
+  //   IsUsableItem would refuse gear the character CAN wear -- over-filtering, the worse failure.
+  //
+  // The player-aware gate is on the PLAYER namespace and takes an itemID with the player implied:
+  // C_PlayerInfo.CanUseItem(itemID) -> isUseable (PlayerInfoDocumentation.lua:39-52). That it is
+  // callable on THIS client is not inferred from the docs tree: Blizzard's own profession-gear
+  // tutorial calls it on a bag item to decide whether to offer the gear at all
+  // (Blizzard_Tutorials/Blizzard_Tutorials_Professions.lua:122-123), and that addon's .toc
+  // carries `## AllowLoadGameType: standard, camelot`.
+  assert.equal(vm.evaluate('type(C_PlayerInfo.CanUseItem)'), 'function', 'the client gate is on the player namespace');
+  assert.equal(vm.evaluate('C_PlayerInfo.CanUseItem(2210)'), 'false', 'and it answers for an itemID, with the player implied');
+
+  // THE CARD'S OWN CHARACTER AND THE CARD'S OWN ITEMS. Level 4 Tauren Druid, and the three items
+  // bridge/state.json measured in its bags. The ids, names, locations and class pairs are the real
+  // ones (2210 / 2211 are Armor/Shield Off Hand, 1384 is Weapon/Sword Main Hand), so this walks
+  // with the data rather than inventing a case. The harness answers from class and level, which is
+  // where the client gets it too: per-class armour proficiency, the shield restriction, and the
+  // weapon skill lines.
+  vm.run('STUB.class, STUB.classToken = "Druid", "DRUID"; STUB.level = 4');
+  vm.run('STUB.bags = { [0] = { { id = 2210, name = "Battered Buckler", quality = 0 }, { id = 1384, name = "Dull Blade", quality = 1 }, { id = 2211, name = "Bent Large Shield", quality = 0 } } }; STUB.bagSlots = { [0] = 3 }');
+
+  // CRITERION 1: the two shields and the sword are NOT candidates, and the count is honest about
+  // it -- 0 of 3, not a dropped line and not "3 of 3". A Druid has no shield proficiency at all
+  // and no sword skill, so all three are equipment this character can never wear. This is the
+  // measured defect: the line used to read "3 of 13 ... Off Hand Battered Buckler(P), Main Hand
+  // Dull Blade(C), Off Hand Bent Large Shield(P)".
+  const druidOnly = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(druidOnly, 'Bags: 0 of 3 items wearable',
+    `a Druid is offered no shield and no sword, and the count still states what was looked at: ${druidOnly}`);
+  assert.ok(!druidOnly.includes('Buckler') && !druidOnly.includes('Shield'), 'no shield is offered to a Druid');
+  assert.ok(!druidOnly.includes('Dull Blade'), 'nor a warrior/rogue starter sword');
+
+  // CRITERION 2: real gear is still listed. The whole point of the line is the upgrade question, so
+  // over-filtering it into permanent emptiness would be the worse bug. Two items a level-4 Druid
+  // can genuinely wear are planted alongside the same three, and they must appear with their slots.
+  vm.run('STUB.bags = { [0] = { { id = 2210, name = "Battered Buckler", quality = 0 }, { id = 35, name = "Bent Staff", quality = 1 }, { id = 1384, name = "Dull Blade", quality = 1 }, { id = 85, name = "Dirty Leather Vest", quality = 1 }, { id = 2211, name = "Bent Large Shield", quality = 0 } } }; STUB.bagSlots = { [0] = 5 }');
+  const mixed = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(mixed, 'Bags: 2 of 5 items wearable -- Two-Hand Bent Staff(C), Chest Dirty Leather Vest(C)',
+    `a staff and a leather vest are worn by a Druid and stay listed, the other three do not: ${mixed}`);
+  assert.ok(mixed.includes('Two-Hand Bent Staff(C)'), 'the staff survives, with the slot it competes for');
+  assert.ok(/Chest Dirty Leather Vest\(C\)/.test(mixed), 'so does the leather chestpiece');
+
+  // CRITERION 3: the SAME items, the SAME gates, a different class. Nothing here is shield-specific
+  // or sword-specific -- only the character changed. A warrior may wear both shields, so both come
+  // back, which is what proves the filter is keyed on the character and not on the item.
+  vm.run('STUB.class, STUB.classToken = "Warrior", "WARRIOR"');
+  const warriorAll = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(warriorAll, 'Bags: 5 of 5 items wearable -- Off Hand Battered Buckler(P), Two-Hand Bent Staff(C), Main Hand Dull Blade(C), Chest Dirty Leather Vest(C), Off Hand Bent Large Shield(P)',
+    `a warrior's shield IS listed for a warrior -- the class-agnostic case: ${warriorAll}`);
+  vm.run('STUB.class, STUB.classToken = "Druid", "DRUID"');
+
+  // CRITERION 4: an unreadable answer costs NOTHING. Three ways the client can fail to answer, and
+  // every one of them must leave the item exactly where it was. This is the same discipline the
+  // profession-tool filter follows: only a POSITIVE refusal suppresses a candidate. Dropping gear
+  // because the client declined to answer would be a fabricated absence -- the failure this file
+  // refuses everywhere else -- and it would silently empty the line for any character on a
+  // restricted map, which is precisely where an agent's advice matters most.
+  const druidThree = 'Bags: 0 of 3 items wearable';
+  // Back to the card's own three items, so every unanswerable case below is measured against the
+  // same bag the criterion-1 assertion used.
+  vm.run('STUB.bags = { [0] = { { id = 2210, name = "Battered Buckler", quality = 0 }, { id = 1384, name = "Dull Blade", quality = 1 }, { id = 2211, name = "Bent Large Shield", quality = 0 } } }; STUB.bagSlots = { [0] = 3 }');
+  assert.equal(vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: ')), druidThree, 'baseline before the unanswerable cases');
+
+  // (a) the API is absent on this client
+  vm.run('STUB_C_PLAYERINFO = C_PlayerInfo; C_PlayerInfo = nil');
+  const noApi = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(noApi, 'Bags: 3 of 3 items wearable -- Off Hand Battered Buckler(P), Main Hand Dull Blade(C), Off Hand Bent Large Shield(P)',
+    `with no C_PlayerInfo the items stay listed -- an absent API is not a refusal: ${noApi}`);
+  vm.run('C_PlayerInfo = STUB_C_PLAYERINFO');
+
+  // (b) the call throws
+  vm.run('STUB_canUse = C_PlayerInfo.CanUseItem; C_PlayerInfo.CanUseItem = function() error("no answer for you") end');
+  const threw = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(threw, noApi, `a call that throws is an unreadable answer, not a refusal: ${threw}`);
+  vm.run('C_PlayerInfo.CanUseItem = STUB_canUse');
+
+  // (c) the answer is a secret. The client marks a guarded call's returns while the player is on an
+  // addon-restricted map (SecretPredicatesDocumentation.lua:70, SecretOnRestrictedMaps), and a
+  // secret is still `type() == "boolean"` -- so a guard that only checked the type would read a
+  // withheld answer as a real one and filter on it.
+  vm.run('STUB.boolsSecret = true');
+  const secretAnswer = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(secretAnswer, noApi, `a secret answer leaves the item listed, exactly like no answer: ${secretAnswer}`);
+  vm.run('STUB.boolsSecret = false');
+
+  // ...and the withheld answer is genuinely distinguishable from a real one, or the case above
+  // proves nothing: the same value is read as a plain answer once the flag is down.
+  assert.equal(vm.evaluate('issecretvalue(true)'), 'false', 'a plain boolean answer is not a secret');
+  assert.equal(vm.evaluate('issecretvalue(C_PlayerInfo.CanUseItem(35))'), 'false', 'a real answer is not a secret');
+  vm.run('STUB.boolsSecret = true');
+  assert.equal(vm.evaluate('issecretvalue(C_PlayerInfo.CanUseItem(35))'), 'true', 'a guarded answer is');
+  vm.run('STUB.boolsSecret = false');
+  assert.equal(vm.evaluate('C_PlayerInfo.CanUseItem(2210)'), 'false', 'and the refusal is still a refusal once the map is unrestricted');
+
+  // (d) an item the client cannot classify at all gets NO answer -- nil, not false -- and stays
+  // listed. This is the "unreadable" third value, and it is the one that makes the call site read
+  // `~= false` rather than a truthiness test: the profession-tool case already pins the class-pair
+  // half of this; here it is the eligibility half, on the same item.
+  vm.run('STUB.bags = { [0] = { { id = 9999, name = "Mystery Blade", quality = 2 } } }; STUB.bagSlots = { [0] = 1 }');
+  vm.run('STUB.equipLoc[9999] = "INVTYPE_WEAPONMAINHAND"; STUB.itemClass[9999] = nil');
+  const unclassified = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(unclassified, 'Bags: 1 of 1 items wearable -- Main Hand Mystery Blade(U)',
+    `an item the client will not answer for stays listed: ${unclassified}`);
+  // ...and the moment the same id IS classed as something this Druid cannot use, it goes.
+  vm.run('STUB.itemClass[9999] = { 4, 6 }');
+  assert.equal(vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: ')), 'Bags: 0 of 1 items wearable',
+    'the same item, same location, classed armor/shield, is dropped for a Druid');
+  vm.run('STUB.itemClass[9999] = nil; STUB.equipLoc[9999] = nil');
+
+  // The worn half is untouched: what the player is WEARING is not a candidate and is not filtered.
+  const worn = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Worn: '));
+  assert.ok(/^Worn: Head Worn Helm\(P\)/.test(worn), `the Worn line is unaffected: ${worn}`);
+
+  // And the block still fits with the extra gate in place.
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS; STUB.class, STUB.classToken = "Hunter", "HUNTER"; STUB.level = 23');
+  const full = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(Buffer.byteLength(full, 'utf8') < 700, `context is ${Buffer.byteLength(full, 'utf8')} bytes, under CONTEXT_MAX (700)`);
+  console.log(`      class-eligibility answer for the card's Druid: "${druidOnly}"  (was "3 of 13 ... Off Hand Battered Buckler(P), Main Hand Dull Blade(C), Off Hand Bent Large Shield(P)")`);
+  console.log(`      ...and the same items for a warrior: "${warriorAll}"`);
 });
 
 test('a fully-geared character still fits, and the packing never overshoots the cap', () => {

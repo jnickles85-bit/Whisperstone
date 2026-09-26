@@ -1127,6 +1127,58 @@ local function EquipSlot(itemID)
 	return EQUIP_LOC[loc]
 end
 
+-- The client's own answer to "may THIS character put it on at all" -- the armour and weapon
+-- proficiency, level, class and race gates the item tooltip renders in red. This is the layer
+-- EquipSlot cannot see: EquipSlot answers WHERE an item goes, which is a fact about the item,
+-- and says nothing about whether this player is allowed to put it there. A shield on a Druid is
+-- the case that exposed it -- a real Off Hand slot, a real Off Hand label, and a character who
+-- can never wear it.
+--
+-- WHICH PREDICATE, and why it is not either of the two the obvious names suggest:
+--   * C_Item.IsEquippableItem(itemID) is NOT it. It answers "does this item fit some equipment
+--     slot", statically, and does not consider the player: its own documentation example shows
+--     both a plate and a leather tier-3 headpiece returning 1 on a Druid. Filtering on it would
+--     leave the shield on the line exactly as before.
+--   * C_Item.IsUsableItem(itemID) is NOT it either, and this is the trap. It returns
+--     `usable, noMana` (ItemDocumentation.lua:1627-1641) -- the second return is the giveaway:
+--     it is the item analog of IsSpellUsable, answering "can I right-click USE this now", and it
+--     has no equip meaning at all. Camelot's own paper doll calls it for the gamepad's Use action
+--     (Camelot/PaperDollFrame.lua:1818, CONTEXT_ACTION_LABEL_USE) while the EQUIP action three
+--     functions later is gated by IsEquippableItem (Mainline/ContainerFrame.lua:3123 vs :3143) --
+--     two distinct footer actions, two distinct predicates. A plain robe upgrade has no on-use
+--     spell, so IsUsableItem would refuse the gear the character CAN wear: the over-filtering
+--     failure, not the fix.
+--   * C_PlayerInfo.CanUseItem(itemID) is the player-aware gate, which is why it lives on the
+--     PLAYER namespace and takes an itemID with no unit token -- the player is implied
+--     (PlayerInfoDocumentation.lua:39-52, `isUseable = C_PlayerInfo.CanUseItem(itemID)`). It is
+--     callable on this client, not merely documented: Blizzard's own profession-gear tutorial
+--     calls it on a bag item to decide whether to offer the gear at all
+--     (Blizzard_Tutorials/Blizzard_Tutorials_Professions.lua:123), and that file's .toc carries
+--     `## AllowLoadGameType: standard, camelot` -- a camelot-loaded call site, which is the
+--     standard this file uses everywhere else for "this really runs on Forever".
+--
+-- Three-valued on purpose, and the third value is the important one. Only a POSITIVE refusal
+-- suppresses a candidate; an unreadable answer costs nothing:
+--   false -- the client positively said this character cannot use it -> the one answer that
+--            takes an item off the line
+--   true  -- the client positively accepted it
+--   nil   -- no C_PlayerInfo at all, a call that threw, a return that is not a plain boolean,
+--            or a secret on a restricted map -> UNKNOWN, and the item stays listed
+-- nil is not false in Lua, which is what makes the call site below read the safe way round: a
+-- client that cannot answer must leave the item where it was, never filter on a guess. That is
+-- the same discipline MiscWeapon follows, in the direction where the safe default is to keep.
+local function Usable(itemID)
+	if type(itemID) ~= "number" then return nil end
+	local fn = type(C_PlayerInfo) == "table" and C_PlayerInfo.CanUseItem or nil
+	if type(fn) ~= "function" then return nil end
+	local ok, v = pcall(fn, itemID)
+	if not ok then return nil end
+	-- A secret is the client's way of withholding the answer, not of giving it: type() still
+	-- says "boolean", so the value itself has to be asked (see Secret above).
+	if type(v) ~= "boolean" or Secret(v) then return nil end
+	return v
+end
+
 -- The player's bags, from the client's own enum where it can be read: Enum.BagIndex
 -- is a real table on Forever -- camelot's bank frame walks it
 -- (Blizzard_UIPanels_Game/Camelot/BankFrame.lua:187) -- with Backpack = 0 and
@@ -1177,6 +1229,13 @@ end
 -- four bags, slots ascending), each with the slot it would compete for:
 -- "Chest Fine Robe(U)".
 --
+-- "Wearable" means two things, and both have to hold: the item has a wear slot
+-- (EquipSlot), AND this character is allowed to put it there (Usable). Only the
+-- first was checked before, which is how a level-4 Tauren Druid came to be
+-- offered a shield and a warrior's starter sword -- items with a real slot that
+-- this class can never wear. Neither gate is allowed to guess: an item the
+-- client will not classify, or will not answer for, stays listed.
+--
 -- Returns parts, items seen, and wearable items found -- three values, because
 -- they are three different facts and the line states all of them: how much was
 -- looked at, how much of it was gear, and which gear. A bag holding six stacks
@@ -1205,8 +1264,19 @@ local function BagParts()
 				local info = Try(api.GetContainerItemInfo, bag, slot)
 				if type(info) == "table" then
 					seen = seen + 1
-					local label = EquipSlot(Plain(info.itemID))
-					if label then
+					local itemID = Plain(info.itemID)
+					local label = EquipSlot(itemID)
+					-- Two separate gates, and the second is the one this card is about. EquipSlot
+					-- says which slot the item claims; Usable says whether this character may
+					-- wear it at all. A shield on a Druid passes the first (a real Off Hand, a
+					-- real "Off Hand" label) and fails the second, and it is the second that makes
+					-- it not an upgrade.
+					--
+					-- `~= false`, never a truthiness test: Usable is three-valued, and its third
+					-- value (nil = the client would not say) must leave the candidate listed.
+					-- Writing `if label and Usable(itemID) then` would invert the safe direction
+					-- and silently delete real gear on any client that cannot answer.
+					if label and Usable(itemID) ~= false then
 						found = found + 1
 						-- The name comes from the info table's own field; the link is
 						-- the fallback, since the client fills both.

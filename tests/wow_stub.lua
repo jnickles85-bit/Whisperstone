@@ -200,8 +200,14 @@ function GetBuildInfo() return "1.60.1", "69913", "Sep 1 2026", 16001 end
 function UnitName(unit) if unit == "player" then return "Testchar" end end
 function GetRealmName() return "Test Realm" end
 function UnitLevel(unit) return STUB.level end
+-- The class, as a field so a test that reproduces a live character can be that character. The
+-- addon never reads the class for the bag filter -- what it consumes is the client's ANSWER for
+-- the item (STUB.canUse below), which is the whole reason that gate lives on the client and not
+-- here. But the game context names the character, so a fixture that is meant to be the level-4
+-- Tauren Druid from the card should say so rather than "Night Elf Hunter".
+STUB.class, STUB.classToken = "Hunter", "HUNTER"
+function UnitClass(unit) if unit == "player" then return STUB.class, STUB.classToken end end
 function UnitRace(unit) return "Night Elf", "NightElf" end
-function UnitClass(unit) return "Hunter", "HUNTER" end
 function UnitFactionGroup(unit) return "Alliance", "Alliance" end
 function GetGuildInfo(unit) return "Test Guild", "Member", 1 end
 function GetZoneText() return STUB.zone end
@@ -300,7 +306,25 @@ end
 -- alone cannot pass this harness, and a harness that cannot produce a secret cannot test what the
 -- addon does with one.
 STUB.secret = -987654
-function issecretvalue(v) return v == STUB.secret end
+-- A secret BOOLEAN, the other shape a withheld answer comes in, and it cannot be modelled by a
+-- marker VALUE the way the numeric one is: a secret `true` and a plain `true` are the same value
+-- in Lua, so identity cannot tell them apart. What distinguishes them in game is CONTEXT -- the
+-- client marks the answers of a secret-returning call while the player is on a restricted map
+-- (SecretPredicatesDocumentation.lua:70, "produce secret values when the player is on an
+-- addon-restricted map such as a dungeon or raid") -- so the harness models exactly that, as a
+-- state flag a test raises to put the character "on a restricted map".
+--
+-- An earlier cut of this flagged the VALUE `true` instead, which made every POSITIVE answer read
+-- as withheld -- the harness then disagreed with every call site and the boolean branch of the
+-- addon's gate could not be exercised honestly in either direction. The flag keeps
+-- `issecretvalue(true)` false by default, so a plain answer stays plain, and true only while a
+-- test has deliberately raised it.
+STUB.boolsSecret = false
+function issecretvalue(v)
+	if v == STUB.secret then return true end
+	if type(v) == "boolean" and STUB.boolsSecret then return true end
+	return false
+end
 -- Level 23 Night Elf Hunter, so the resource bar is Mana (the token is what the client reports;
 -- Blizzard's character sheet looks the display name up as _G[powerToken], Camelot/PaperDollFrame.lua:651).
 MANA = "Mana"
@@ -427,6 +451,21 @@ STUB.equipLoc = {
 	-- rather than via the class pair that actually separates them in game.
 	[2901] = "INVTYPE_WEAPONMAINHAND",
 	[5956] = "INVTYPE_WEAPONMAINHAND",
+	-- The three items on the card, at their real ids and real locations, so the acceptance test
+	-- reproduces the measured line rather than an invented one. bridge/state.json for the level-4
+	-- Tauren Druid reported: "Off Hand Battered Buckler(P), Main Hand Dull Blade(C), Off Hand Bent
+	-- Large Shield(P)". All three are real vanilla items with the locations the client gives them
+	-- (StatForge corpus item-data.json: 2210 and 2211 are Armor/Shield, Off Hand; 1384 is
+	-- Weapon/Sword, Main Hand).
+	[2210] = "INVTYPE_SHIELD",        -- Battered Buckler
+	[2211] = "INVTYPE_SHIELD",        -- Bent Large Shield
+	[1384] = "INVTYPE_WEAPONMAINHAND", -- Dull Blade (a warrior/rogue starter sword)
+	-- The positive case: gear a Druid CAN wear at level 4, so the test proves real upgrades still
+	-- appear. Bent Staff is the staff the same character actually had equipped
+	-- ("Worn: ... Main Hand Bent Staff(C)"), and Dirty Leather Vest is leather, which a Druid may
+	-- wear from level 1.
+	[35] = "INVTYPE_2HWEAPON",        -- Bent Staff (Weapon/Staff) -- a druid weapon
+	[85] = "INVTYPE_CHEST",           -- Dirty Leather Vest (Armor/Leather) -- a druid armour type
 }
 -- The class pair the same call returns AFTER the equip location -- the 6th and 7th values
 -- (Blizzard_APIDocumentationGenerated/ItemDocumentation.lua:676-677), which camelot's own
@@ -449,8 +488,90 @@ STUB.itemClass = {
 	[2901] = { 2, 14 },  -- Mining Pick: weapon, Miscellaneous -- the profession-tool bucket
 	[5956] = { 2, 14 },  -- Blacksmith Hammer: weapon, Miscellaneous
 	[7005] = { 2, 14 },  -- Skinning Knife: weapon, Miscellaneous
+	-- The card's own three items, so the acceptance test walks the real case end to end.
+	[2210] = { 4, 6 },   -- Battered Buckler: armor, shield -- a Druid may NOT wear it
+	[2211] = { 4, 6 },   -- Bent Large Shield: armor, shield -- nor this
+	[1384] = { 2, 7 },   -- Dull Blade: weapon, sword -- a Druid has no sword proficiency
+	-- ...and the two a Druid CAN use, so "filtered" cannot be confused with "filtered everything".
+	[35] = { 2, 10 },    -- Bent Staff: weapon, staff -- a Druid weapon
+	[85] = { 4, 2 },     -- Dirty Leather Vest: armor, leather -- a Druid armour type
 }
 STUB_ITEM_CLASS = STUB.itemClass
+-- C_PlayerInfo.CanUseItem -- the client's own answer to "may THIS character use/equip this".
+--
+-- This is the harness standing in for KNOWLEDGE THE CLIENT HAS, not for a rule the addon applies.
+-- In game the answer comes from the per-item-class proficiency bitmask the client is sent with the
+-- character (the same gate whose refusal renders ERR_PROFICIENCY_NEEDED in red on the tooltip),
+-- plus the item's RequiredLevel and its class/race masks
+-- (PlayerInfoDocumentation.lua:39, `isUseable = C_PlayerInfo.CanUseItem(itemID)`).
+--
+-- A harness that answered `true` for everything would make the shield-on-a-Druid bug look fixed:
+-- the addon's filter would be exercised but never fed a "no". So the model answers from the
+-- character's class and level, in the shape the client really has:
+--
+--   Armour     -- an armour type rank, cloth < leather < mail < plate. Every class wears cloth;
+--                 rogue/druid/hunter/shaman add leather; hunter and shaman add mail at 40;
+--                 warrior and paladin add plate at 40 (mail before that). Rings, trinkets, necks
+--                 and cloaks are Armor/Generic in this data, i.e. no proficiency concept.
+--   Shields    -- Armor/Shield (subclass 6) is worn by warriors, paladins and shamans ONLY.
+--                 "Warriors, paladins, and shaman are the only classes that may use shields."
+--                 This is the fact the card's Druid violates, so the model is explicit about it
+--                 rather than letting it fall through as unrestricted.
+--   Weapons    -- per class, as Enum.ItemWeaponSubclass values (ItemConstantsDocumentation.lua:625-645).
+--
+-- SAFE DIRECTION, deliberately and in the same sense as the addon's own filter: HUNTER, DRUID and
+-- WARRIOR -- the classes the fixtures use -- get real weapon rules, and any other class is
+-- answered `true` for weapons rather than guessed at, so an unmodelled fixture can never be
+-- silently hidden. `STUB.canUse[id]` overrides everything, for a test that needs the opposite
+-- answer for one item.
+--
+-- An item the harness cannot classify (no STUB.itemClass entry) gets NO answer -- nil, not false
+-- -- which is the state a client that will not classify an item produces, and the one the addon's
+-- filter must read as "leave it alone".
+STUB.canUse = {}   -- per-item-id override: [id] = true/false, wins over the model
+local ARMOR_RANK = { [1] = 1, [2] = 2, [3] = 3, [4] = 4 }        -- Cloth, Leather, Mail, Plate
+local ARMOR_MAX = {
+	MAGE = 1, PRIEST = 1, WARLOCK = 1,
+	ROGUE = 2, DRUID = 2,
+	HUNTER = 2, SHAMAN = 2,        -- mail at 40 (see CanUseItem)
+	WARRIOR = 3, PALADIN = 3,      -- mail until 40, plate after
+}
+local WEAPON_OK = {
+	-- everything except wands (19) and fishing poles (20)
+	WARRIOR = { [0]=true,[1]=true,[2]=true,[3]=true,[4]=true,[5]=true,[6]=true,[7]=true,[8]=true,[10]=true,[13]=true,[15]=true,[16]=true,[18]=true },
+	-- axes (1h/2h), bows, guns, polearms, swords (1h/2h), staves, fist, daggers, thrown, crossbows
+	HUNTER  = { [0]=true,[1]=true,[2]=true,[3]=true,[6]=true,[7]=true,[8]=true,[10]=true,[13]=true,[15]=true,[16]=true,[18]=true },
+	-- maces (1h/2h), staves, fist, daggers -- a Druid may not use a sword or an axe
+	DRUID   = { [4]=true,[5]=true,[10]=true,[13]=true,[15]=true },
+}
+C_PlayerInfo = {
+	CanUseItem = function(itemID)
+		local override = STUB.canUse[itemID]
+		if override ~= nil then return override end
+		local pair = STUB.itemClass[itemID]
+		if not pair then return nil end
+		local classID, subclassID = pair[1], pair[2]
+		local token, level = STUB.classToken, STUB.level or 1
+		if classID == 4 then                                  -- Armor (Enum.ItemClass.Armor)
+			if subclassID == 6 then                           -- Shield
+				return token == "WARRIOR" or token == "PALADIN" or token == "SHAMAN"
+			end
+			local rank = ARMOR_RANK[subclassID]
+			if not rank then return true end                  -- Generic/Cosmetic/Libram/Idol: no gate
+			local max = ARMOR_MAX[token]
+			if not max then return true end
+			if max == 2 and level >= 40 and (token == "HUNTER" or token == "SHAMAN") then max = 3 end
+			if max == 3 and level >= 40 and (token == "WARRIOR" or token == "PALADIN") then max = 4 end
+			return rank <= max
+		end
+		if classID == 2 then                                  -- Weapon (Enum.ItemClass.Weapon)
+			local set = WEAPON_OK[token]
+			if not set then return true end
+			return set[subclassID] == true
+		end
+		return true                                           -- no proficiency concept (trade goods, ...)
+	end,
+}
 C_Container = {
 	GetContainerNumSlots = function(bag) return STUB.bagSlots[bag] or 0 end,
 	GetContainerItemInfo = function(bag, slot)
