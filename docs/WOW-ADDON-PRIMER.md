@@ -1,12 +1,12 @@
 # WoW: Forever addon and macro primer
 
-Read by the wow-ai bridge and appended to the agent's system prompt on every run (Claude and Grok; for Codex it goes at the top of the prompt) (see `primerFile` in docs/CONFIGURATION.md). Keep it short: it costs tokens on every message. Edit it freely; the bridge re-reads it on each run.
+Read by the wow-ai bridge and sent with the system prompt on every run (`primerFile` in docs/CONFIGURATION.md); it costs tokens on every message.
 
 ## The client
 
-- World of Warcraft: Forever is vanilla content on the current retail engine and UI code (the `Mainline` files, with 12.x-era deprecation shims). Interface number 16001 (client 1.60.x). Lua 5.1.
-- Blizzard's own UI code for this client is the `forever` branch of https://github.com/Gethe/wow-ui-source. When unsure whether a function, frame template or global exists, check there, or in game: `/dump type(SomeFunction)`, `/run print(GetBuildInfo())`.
-- Use the modern `C_` namespaces; many old globals are gone or only exist as temporary shims: `C_Item.GetItemInfo` (not `GetItemInfo`), `C_Spell.GetSpellInfo` / `C_Spell.GetSpellCooldown` (return tables, not multiple values), `C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL")` (not `UnitBuff`), `C_Container.GetContainerNumSlots` / `GetContainerItemInfo` (returns a table), `C_AddOns`, `C_Timer`, `C_Map`. Write a fallback only if you have confirmed the old name exists: `local f = (C_Item and C_Item.GetItemInfo) or GetItemInfo`. Skill lines are namespaced too: there is no bare `GetNumSkillLines` / `GetSkillLineInfo`, and `C_SkillInfo.GetSkillLineInfo(index)` returns one `SkillLineAttributes` table (fields `name`, `isHeader`, `rank`, `maxRank`, `skillLineCategoryID`, …), not positional values. For a character's trained professions use `GetProfessions()` (one skill-line index per slot, `nil` where a slot is empty) and `GetProfessionInfo(index)`. Talents are a namespace too, and there is **no tab loop**: `GetNumTalentTabs` appears nowhere in this client, and `GetTalentTabInfo` / `GetTalentInfo` are defined only by `Blizzard_DeprecatedSpecialization`, whose `.toc` carries `## AllowLoadGameType: classic, standard` — so that addon never loads on Forever and neither shim exists in game. Use `C_SpecializationInfo.GetSpecialization()` (the one active spec's index) then `C_SpecializationInfo.GetSpecializationInfo(specIndex)` → `specId, name, description, icon, role, primaryStat, pointsSpent, …`, exactly as Blizzard's own Camelot `PaperDollFrame.lua:498,504` does.
+- World of Warcraft: Forever is vanilla content on the current retail engine and UI code (the `Mainline` files, with 12.x-era deprecation shims). Interface number 16001. Lua 5.1.
+- Blizzard's own UI code for this client is the `forever` branch of https://github.com/Gethe/wow-ui-source. Check there, or in game (`/dump type(SomeFunction)`), before trusting any function or template.
+- Use the modern `C_` namespaces; many old globals are gone or exist only as temporary shims: `C_Item.GetItemInfo` (not `GetItemInfo`), `C_Spell.GetSpellInfo` / `C_Spell.GetSpellCooldown` (tables, not multiple values), `C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL")` (not `UnitBuff`), `C_Container.GetContainerNumSlots` / `GetContainerItemInfo` (tables), `C_AddOns`, `C_Timer`, `C_Map`. Only fall back when you have confirmed the old name exists: `(C_Item and C_Item.GetItemInfo) or GetItemInfo`. Skill lines are namespaced too: there is no bare `GetNumSkillLines` / `GetSkillLineInfo`, and `C_SkillInfo.GetSkillLineInfo(index)` returns one `SkillLineAttributes` table (`name`, `rank`, `maxRank`, …), not positional values. Trained professions: `GetProfessions()` (one skill-line index per slot, `nil` where a slot is empty) then `GetProfessionInfo(index)`. Talents have **no tab loop**: `GetNumTalentTabs` appears nowhere in this client, and `GetTalentTabInfo` / `GetTalentInfo` come only from `Blizzard_DeprecatedSpecialization`, which never loads on Forever (its `.toc` says `## AllowLoadGameType: classic, standard`), so neither shim exists in game. Use `C_SpecializationInfo.GetSpecialization()` then `C_SpecializationInfo.GetSpecializationInfo(specIndex)` → `specId, name, icon, role, pointsSpent, …`, as Blizzard's own Camelot `PaperDollFrame.lua:498,504` does.
 - Beta quirk: the client sometimes wipes addon SavedVariables. Do not keep anything irreplaceable only there.
 
 ## Reading the game context the bridge hands you
@@ -14,9 +14,13 @@ Read by the wow-ai bridge and appended to the agent's system prompt on every run
 A few `Key: value` lines about the character sit at the top of your prompt.
 
 - `Stats: HP 1450, Mana 820, Armor 512, Str 68, ...` — effective sheet totals. A field can be **absent rather than 0** (secret on some maps), so never read a missing one as 0.
-- `Gear: 7 of 19 slots filled (12 empty)` — a **count, not a list**: nothing about which item is where. For "is this an upgrade?" ask them to shift-click what they wear.
+- `Gear: 7 of 19 slots filled (12 empty)` — a **count**, for the shape of the character.
+- `Worn: Head Worn Helm(P), Neck Thick Necklace(C), …` — **what is equipped, item by item**: one entry per filled slot, `Slot Name(Q)` with a one-letter quality (P poor, C common, U uncommon, R rare, E epic, L legendary) — what a bag candidate would replace.
+- `Bags: 4 of 7 items wearable -- Weapon Fine Longsword(U), …` — the **wearable** items in the backpack and bags 1-4, each labelled with the slot it competes for. `<n> of <m>` counts wearable items out of items found; `0 of 12 items wearable` is a real answer ("nothing in your bags is gear"), not a missing line.
+- Both lists are **truncated to fit** and say so with `, +N more`: a trailing `+N more` means candidates you have not been shown, so never read a short list as complete — ask for the item to be shift-clicked when it matters.
+- Either line can be **absent** (an API the client did not provide, or it would not fit beside your message). Absent is not "empty": no `Worn:` line means you do not know what is equipped; no `Bags:` line, what is in the bags.
 - `Talents:` / `Professions:` absent is legitimate, not a bug.
-- The block is capped and skipped when it will not fit beside a long message — then you read the previous one. `Position:` is the freshness clue.
+- The block is capped and skipped when it will not fit beside a long message; `Position:` is the freshness clue.
 
 ## Addon layout
 
@@ -38,10 +42,10 @@ A few `Key: value` lines about the character sit at the top of your prompt.
 
 ## Sandbox rules
 
-- No networking, no file I/O, no `require`, `io`, `os`, `loadfile`. `time()`, `date()`, `GetTime()` (uptime seconds) exist. `print()` writes to the chat frame.
-- Protected actions (casting, targeting, movement, using items) cannot be called from addon code. They only work from a secure button (`SecureActionButtonTemplate` with `type`/`spell`/`macrotext` attributes) pressed by the player, or from macros. `InCombatLockdown()` is true in combat: secure frames cannot be created, shown, hidden or re-anchored then; queue the change for `PLAYER_REGEN_ENABLED`.
+- No networking, no file I/O, no `require`, `io`, `os`, `loadfile`. `time()`, `date()`, `GetTime()`, `print()` (to the chat frame) exist.
+- Protected actions (casting, targeting, movement, using items) are never callable from addon code: only from a secure button (`SecureActionButtonTemplate` with `type`/`spell`/`macrotext`) the player presses, or from macros. `InCombatLockdown()` is true in combat: secure frames cannot be created, shown, hidden or re-anchored then — queue the change for `PLAYER_REGEN_ENABLED`.
 - `ReloadUI()` and a few others need a hardware event (a real key or click), not a timer.
-- Hook Blizzard code with `hooksecurefunc("FunctionName", fn)` (runs after, cannot break taint) rather than replacing functions; replacing a secure function taints it.
+- Hook Blizzard code with `hooksecurefunc("FunctionName", fn)` (runs after, cannot break taint) instead of replacing functions — replacing a secure function taints it.
 
 ## Frames and events
 
@@ -52,20 +56,18 @@ f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile 
 f:RegisterEvent("PLAYER_LOGIN"); f:RegisterEvent("PLAYER_ENTERING_WORLD")
 f:SetScript("OnEvent", function(self, event, ...) end)
 local text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-local btn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-btn:SetScript("OnClick", function(self, button) end)
 C_Timer.After(2, function() end); C_Timer.NewTicker(1, function() end)
 SLASH_MYADDON1 = "/myaddon"; SlashCmdList.MYADDON = function(msg) end
 ```
 
-- Common templates: `UIPanelButtonTemplate`, `UIPanelCloseButton`, `UIPanelScrollFrameTemplate`, `InputBoxTemplate`, `UICheckButtonTemplate`, `GameTooltipTemplate`, `BackdropTemplate` (required for `SetBackdrop`).
-- Useful events: `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_ENTERING_WORLD`, `PLAYER_REGEN_DISABLED`/`ENABLED` (combat start/end), `PLAYER_TARGET_CHANGED`, `UNIT_HEALTH`, `UNIT_AURA`, `BAG_UPDATE`, `ZONE_CHANGED_NEW_AREA`, `PLAYER_LEVEL_UP`, `CHAT_MSG_*`, `COMBAT_LOG_EVENT_UNFILTERED` (read with `CombatLogGetCurrentEventInfo()`).
-- Unit functions take a unit token: `"player"`, `"target"`, `"pet"`, `"party1"`, `"raid5"`, `"mouseover"`. `UnitName`, `UnitLevel`, `UnitClass` (localized, then token), `UnitHealth`/`UnitHealthMax`, `UnitPower`, `UnitExists`, `UnitIsDead`, `UnitIsEnemy`; auras via `C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL"|"HARMFUL")` or `AuraUtil.ForEachAura`.
-- Items and spells: `C_Item.GetItemInfo(idOrLink)`, `C_Spell.GetSpellInfo(idOrName)` (table: name, iconID, castTime, ...), `C_Spell.GetSpellCooldown(id)` (table), `C_Spell.IsSpellUsable`, `GetInventoryItemLink("player", slot)`, bag contents via `C_Container.GetContainerNumSlots(bag)` / `C_Container.GetContainerItemInfo(bag, slot)` (table; bags 0..4).
-- Tooltips: `GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")`, then `SetUnit`, `SetHyperlink`, `SetBagItem`, `SetInventoryItem`. Read lines off a hidden tooltip named `MyScanTip` via `MyScanTipTextLeft<i>:GetText()`.
+- Templates: `UIPanelButtonTemplate`, `UIPanelCloseButton`, `UIPanelScrollFrameTemplate`, `InputBoxTemplate`, and `BackdropTemplate` (required for `SetBackdrop`).
+- Useful events: `ADDON_LOADED`, `PLAYER_LOGIN`, `PLAYER_ENTERING_WORLD`, `PLAYER_REGEN_DISABLED`/`ENABLED` (combat start/end), `PLAYER_TARGET_CHANGED`, `UNIT_HEALTH`, `UNIT_AURA`, `BAG_UPDATE`, `PLAYER_LEVEL_UP`, `CHAT_MSG_*`, `COMBAT_LOG_EVENT_UNFILTERED` (read with `CombatLogGetCurrentEventInfo()`).
+- Unit functions take a unit token: `"player"`, `"target"`, `"pet"`, `"party1"`, `"raid5"`, `"mouseover"`. `UnitName`, `UnitLevel`, `UnitClass` (localized, then token), `UnitHealth`/`UnitHealthMax`, `UnitPower`, `UnitExists`, `UnitIsDead`; auras with `C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL"|"HARMFUL")` or `AuraUtil.ForEachAura`.
+- Items and spells: `C_Item.GetItemInfo(idOrLink)`, `C_Spell.GetSpellInfo(idOrName)` (table: name, iconID, castTime, ...), `C_Spell.GetSpellCooldown(id)`, `C_Spell.IsSpellUsable`, `GetInventoryItemLink("player", slot)`, `GetInventoryItemQuality`, bag contents via `C_Container.GetContainerNumSlots(bag)` / `C_Container.GetContainerItemInfo(bag, slot)` (table; bags 0..4).
+- Tooltips: `GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")`, then `SetUnit`, `SetHyperlink`, `SetBagItem`, `SetInventoryItem`. Read lines off a hidden tooltip (`MyScanTipTextLeft<i>:GetText()`).
 - Text markup: `|cAARRGGBBtext|r` colour, `|Hitem:2140|h[Fine Longsword]|h` link, `|Ttexture:16|t` icon. Handle link clicks with `hooksecurefunc("SetItemRef", fn)`.
-- The chat code is the modern `ChatFrameUtil` API (Blizzard_ChatFrameBase, Blizzard_ChatFrameUtil): `ChatFrameUtil.InsertLink(text)` is what a shift-click calls, `ChatFrameUtil.GetActiveWindow()` the active edit box, `ChatFrameUtil.OpenChat(text)`. The old `ChatEdit_*` globals may exist as aliases but Blizzard's own code does not call them, so hook the `ChatFrameUtil` table (`hooksecurefunc(ChatFrameUtil, "InsertLink", fn)`).
-- Helpers Blizzard ships: `strsplit`, `strtrim`, `strjoin`, `format`, `tinsert`, `tremove`, `wipe`, `tContains`, `hooksecurefunc`, `Mixin`, `CreateFrame`, `StaticPopup_Show` with `StaticPopupDialogs["KEY"] = { text=, button1=, button2=, OnAccept=, timeout=0, whileDead=true, hideOnEscape=true }`.
+- The chat code is the modern `ChatFrameUtil` API: `InsertLink(text)` is what a shift-click calls, `GetActiveWindow()` the active edit box, `OpenChat(text)`. The old `ChatEdit_*` globals are aliases only; hook the table itself (`hooksecurefunc(ChatFrameUtil, "InsertLink", fn)`).
+- Helpers Blizzard ships: `strsplit`, `strtrim`, `strjoin`, `tinsert`, `tremove`, `wipe`, `tContains`, `Mixin`, `StaticPopup_Show` with `StaticPopupDialogs["KEY"] = { text=, button1=, button2=, OnAccept=, timeout=0 }`.
 
 ## Macros
 

@@ -330,15 +330,18 @@ function UnitPowerMax(unit, powerType) if unit == "player" then return STUB.powe
 -- guards it and falls back to the 19 slots INVSLOT_HEAD..INVSLOT_TABARD -- the numbering the
 -- camelot character frame's own 20 slot buttons use (Camelot/PaperDollFrame.xml).
 NUM_INVSLOTS = 19
--- Seven filled slots, twelve empty: a nil link is an EMPTY slot, not a failure.
+-- Seven filled slots, twelve empty: a nil link is an EMPTY slot, not a failure. The items are
+-- placed in the slots they would really occupy -- a helm in Head (1), a sword in Main Hand (16)
+-- -- because the Worn line is what the bag items get compared against, and a fixture that puts a
+-- sword in the chest slot would let a wrong slot mapping pass.
 STUB.equipped = {
 	[1] = "|cff9d9d9d|Hitem:100|h[Worn Helm]|h|r",
 	[2] = "|cffffffff|Hitem:120|h[Thick Necklace]|h|r",
-	[5] = "|cff1eff00|Hitem:2140|h[Fine Longsword]|h|r",
+	[5] = "|cff1eff00|Hitem:5301|h[Sturdy Tunic]|h|r",
 	[6] = "|cffffffff|Hitem:220|h[Loose Belt]|h|r",
 	[7] = "|cff1eff00|Hitem:301|h[Sturdy Leggings]|h|r",
 	[8] = "|cffffffff|Hitem:410|h[Worn Boots]|h|r",
-	[16] = "|cffffffff|Hitem:520|h[Bent Dagger]|h|r",
+	[16] = "|cff1eff00|Hitem:2140|h[Fine Longsword]|h|r",
 }
 function GetInventoryItemLink(unit, slot)
 	if unit ~= "player" then return nil end
@@ -348,10 +351,126 @@ end
 -- (by clearing the global, as a client without it would behave) can put it back.
 STUB_EQUIPPED = STUB.equipped
 STUB_GetInventoryItemLink = GetInventoryItemLink
+-- GetInventoryItemQuality is a BARE global too, called by camelot's own character frame
+-- (Camelot/PaperDollFrame.lua:2184: `local quality = GetInventoryItemQuality("player", self:GetID())`).
+-- It is what makes the Worn line's quality letters readable without parsing the link, and its
+-- values are the ItemQuality indices the client uses (0 Poor .. 5 Legendary).
+STUB.quality = {
+	[1] = 0, -- Worn Helm, Poor
+	[2] = 1, -- Thick Necklace, Common
+	[5] = 2, -- Sturdy Tunic, Uncommon
+	[6] = 1, -- Loose Belt, Common
+	[7] = 2, -- Sturdy Leggings, Uncommon
+	[8] = 1, -- Worn Boots, Common
+	[16] = 2, -- Fine Longsword, Uncommon
+}
+function GetInventoryItemQuality(unit, slot)
+	if unit ~= "player" then return nil end
+	return STUB.quality[slot]
+end
+STUB_GetInventoryItemQuality = GetInventoryItemQuality
+-- The client's own bag enumeration: Enum.BagIndex is a real table on Forever, walked by
+-- camelot-only code (Camelot/BankFrame.lua:187, `Enum.BagIndex.Characterbanktab`). Its members
+-- are read from the generated documentation rather than chosen here:
+-- Backpack = 0, Bag_1..Bag_4 = 1..4, ReagentBag = 5
+-- (Blizzard_APIDocumentationGenerated/BagIndexConstantsDocumentation.lua).
+Enum = {
+	BagIndex = { Backpack = 0, Bag_1 = 1, Bag_2 = 2, Bag_3 = 3, Bag_4 = 4, ReagentBag = 5 },
+}
+-- The bag API, as Forever exposes it: C_Container with NO bare twin. There is deliberately no
+-- global GetContainerNumSlots / GetContainerItemInfo / GetContainerItemLink here. Those names
+-- survive in exactly two non-doc places in the whole forever tree, and neither reaches a
+-- running client: Blizzard_APIDocumentationGenerated (a union registry, not code) and
+-- Blizzard_BoostTutorial/Blizzard_TutorialLogic.lua:200, which is `## LoadOnDemand: 1` and only
+-- ever loaded for the level-boost flow. Every unnamespaced container call in code that actually
+-- loads on this client is C_Container.* (Camelot/MainMenuBarBagButtons.lua:47,61,65;
+-- Camelot/BankFrame.lua:98; Blizzard_ChatFrameBase/Shared/ChatFrameUtil.lua:1206). A stub that
+-- invents the bare globals makes a design that cannot work in game look tested.
+--
+-- GetContainerItemInfo returns ONE ContainerItemInfo table, not positional returns --
+-- the namespaced form differs from the old global in this way, and the field list is
+-- ContainerDocumentation.lua:766 (iconFileID, stackCount, isLocked, quality, isReadable,
+-- hasLoot, hyperlink, isFiltered, hasNoValue, itemID, isBound, itemName).
+--
+-- The item ids are real low-level vanilla ids with their real equip locations, so an item's
+-- wear slot is decided by GetItemInfoInstant rather than by a field this harness invented.
+STUB.bags = {
+	[0] = {
+		{ id = 2140, name = "Fine Longsword", quality = 2 },
+		{ id = 1009, name = "Linen Cloth", quality = 1 },       -- trade goods: not wearable
+		{ id = 1121, name = "Footpad's Shoes", quality = 2 },
+		nil,                                                     -- an empty slot
+		{ id = 2589, name = "Linen Cloth", quality = 1 },        -- a second stack
+		{ id = 1166, name = "Dented Buckler", quality = 1 },
+	},
+	[1] = { { id = 2140, name = "Fine Longsword", quality = 2 } },
+	[2] = {},                                                    -- an empty bag, size 0
+	[3] = { { id = 1009, name = "Linen Cloth", quality = 1 } },
+	[4] = {},
+	[5] = { { id = 1009, name = "Linen Cloth", quality = 1 } },   -- the REAGENT bag: out of scope
+}
+STUB.bagSlots = { [0] = 6, [1] = 1, [2] = 0, [3] = 1, [4] = 0, [5] = 1 }
+-- Real vanilla equip locations, as C_Item.GetItemInfoInstant reports them: 2140 is a one-hand
+-- sword, 1121 is feet, 1166 is a shield (off hand), and the cloth is INVTYPE_NON_EQUIP_IGNORE --
+-- which the client does NOT map to a wear slot, exactly like a reagent.
+STUB.equipLoc = {
+	[2140] = "INVTYPE_WEAPON",
+	[1121] = "INVTYPE_FEET",
+	[1166] = "INVTYPE_SHIELD",
+	[1009] = "INVTYPE_NON_EQUIP_IGNORE",
+	[2589] = "INVTYPE_NON_EQUIP_IGNORE",
+}
+C_Container = {
+	GetContainerNumSlots = function(bag) return STUB.bagSlots[bag] or 0 end,
+	GetContainerItemInfo = function(bag, slot)
+		local bagItems = STUB.bags[bag]
+		local item = bagItems and bagItems[slot]
+		if not item then return nil end
+		local loc = STUB.equipLoc[item.id]
+		return {
+			iconFileID = 134400,
+			stackCount = 1,
+			isLocked = false,
+			quality = item.quality,
+			isReadable = false,
+			hasLoot = false,
+			hyperlink = "|cff9d9d9d|Hitem:" .. item.id .. "|h[" .. item.name .. "]|h|r",
+			isFiltered = false,
+			hasNoValue = false,
+			itemID = item.id,
+			isBound = false,
+			itemName = item.name,
+			itemEquipLoc = loc,
+		}
+	end,
+}
+-- The same tables under second names, so a test that has to prove a line's ABSENCE (by clearing
+-- the API, or emptying the bags, as those states occur in game) can put them back afterwards.
+STUB_C_CONTAINER = C_Container
+STUB_BAGS = STUB.bags
+STUB_BAG_SLOTS = STUB.bagSlots
+STUB_EQUIP_LOC = STUB.equipLoc
+STUB_QUALITY = STUB.quality
+STUB_ENUM = Enum
 ITEM_QUALITY2_DESC = "Uncommon"
 C_Item = {
 	GetItemInfo = function(link)
 		if tostring(link):find("^item:2140") then return "Fine Longsword", link, 2, 19, 14, "Weapon", "One-Handed Swords" end
+	end,
+	-- GetItemInfoInstant is the variant that works without the item's data cached, and it is the
+	-- one camelot's own character sheet calls to learn an item's equip location
+	-- (Camelot/PaperDollFrameStats.lua:637). Its 4th return is the INVTYPE_* token string --
+	-- the same tokens Blizzard's own UI compares against
+	-- (Blizzard_Collections/Classic/Blizzard_HeirloomCollection.lua:256).
+	-- GetItemInfo and GetItemInfoInstant are both on the namespace; there is deliberately no
+	-- bare GetItemInfoInstant global here, because none exists on this client.
+	GetItemInfoInstant = function(itemInfo)
+		local id = itemInfo
+		if type(itemInfo) == "string" then id = tonumber(itemInfo:match("item:(%d+)")) end
+		if type(id) ~= "number" then return nil end
+		local loc = STUB.equipLoc[id]
+		if not loc then return nil end
+		return id, "Armor", "", loc, 134400, 4, 0
 	end,
 }
 function print(...)

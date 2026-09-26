@@ -140,6 +140,12 @@ test('the game context describes the character and rides on the hello, then only
     // agent needs for gear advice. Both have tests of their own.
     'Stats: HP 1450, Mana 820, Armor 512, Str 68, Agi 95, Sta 74, Int 61, Spi 52',
     'Gear: 7 of 19 slots filled (12 empty)',
+    // Inventory awareness, the subject of its own test: what is worn item-by-item and the
+    // wearable items in the bags. They are the two halves of "do I have an upgrade?", and the
+    // order matters -- see the test named "the game context sends what is worn and what is in
+    // the bags" for what each half is built from and why.
+    'Worn: Head Worn Helm(P), Neck Thick Necklace(C), Chest Sturdy Tunic(U), Waist Loose Belt(C), +3 more',
+    "Bags: 4 of 7 items wearable -- Weapon Fine Longsword(U), Feet Footpad's Shoes(U), Off Hand Dented Buckler(C), Weapon Fine Longsword(U)",
     // Talents have a test of their own: the line is built from C_SpecializationInfo, because the
     // vanilla tab globals are not callable on Forever.
     'Talents: Beast Mastery 14',
@@ -328,6 +334,142 @@ test('the game context sends stat totals and a filled/empty slot count, and stay
   const gearBytes = Buffer.byteLength(lines.find(l => l.startsWith('Gear: ')) || '', 'utf8');
   assert.ok(statsBytes > 0 && gearBytes > 0, `both new lines present in the measured block\n${detail}`);
   console.log(`      context block: ${bytes} bytes of 700 (slack ${700 - bytes}); +${statsBytes + gearBytes + 2} of it the two new lines`);
+});
+
+test('the game context sends what is worn and what is in the bags, with the API the Forever client actually has', () => {
+  const vm = newVM();
+  // This harness models the REAL Forever surface rather than a convenient one, because a stub that
+  // invents APIs is how the talents and professions lines shipped dead. The asymmetry below is the
+  // point: the equipped readers are BARE globals, the container readers are NAMESPACED, and there
+  // is no cross-over in either direction.
+  assert.equal(vm.evaluate('type(_G.GetInventoryItemLink)'), 'function', 'the equipped reader is a bare global');
+  assert.equal(vm.evaluate('type(_G.GetInventoryItemQuality)'), 'function', 'so is the equipped quality reader (Camelot/PaperDollFrame.lua:2184)');
+  assert.equal(vm.evaluate('_G.GetItemInfoInstant'), null, 'but there is no bare GetItemInfoInstant -- it is C_Item.* only');
+  assert.equal(vm.evaluate('type(C_Item.GetItemInfoInstant)'), 'function', 'and that is where the client really keeps it');
+  // The container readers are namespaced, and the bare globals the old code would reach for do NOT
+  // exist. The only unnamespaced container calls left in the whole forever tree are inside
+  // Blizzard_APIDocumentationGenerated (a union registry) and Blizzard_BoostTutorial, which is
+  // `## LoadOnDemand: 1` and never loads outside the level-boost flow.
+  assert.equal(vm.evaluate('type(C_Container.GetContainerNumSlots)'), 'function', 'the bag readers are namespaced');
+  assert.equal(vm.evaluate('type(C_Container.GetContainerItemInfo)'), 'function', 'and return one table, not positional values');
+  assert.equal(vm.evaluate('GetContainerNumSlots'), null, 'there is no bare GetContainerNumSlots on this client');
+  assert.equal(vm.evaluate('GetContainerItemInfo'), null, 'nor a bare GetContainerItemInfo');
+  assert.equal(vm.evaluate('GetContainerItemLink'), null, 'nor a bare GetContainerItemLink');
+  assert.equal(vm.evaluate('Enum.BagIndex.Backpack'), '0', 'Enum.BagIndex is callable, as camelot-only code uses it');
+
+  login(vm);
+  const ctx = vm.evaluate('WoWAI.GameContext()');
+  // What is worn: one entry per EQUIPPED slot that holds something, named, with a one-letter
+  // quality. Empty slots are absent rather than listed -- the Gear line above counts them.
+  assert.ok(ctx.includes('Worn: Head Worn Helm(P), Neck Thick Necklace(C), Chest Sturdy Tunic(U), Waist Loose Belt(C)'), ctx);
+  // Truncation is admitted, not hidden: a list cut short without a marker reads as the whole list.
+  assert.ok(/Worn: .*, \+\d+ more/.test(ctx), `a truncated Worn list must say how many it is not showing: ${ctx}`);
+  // The bags: the wearable items only, each labelled with the slot it competes for, and the counts
+  // of what was looked at and what was even a candidate.
+  assert.ok(ctx.includes('Bags: 4 of 7 items wearable'), ctx);
+  assert.ok(ctx.includes('Weapon Fine Longsword(U)'), ctx);
+  assert.ok(ctx.includes("Feet Footpad's Shoes(U)"), 'the slot comes from the item, via GetItemInfoInstant');
+  assert.ok(ctx.includes('Off Hand Dented Buckler(C)'), 'a shield is an off-hand item');
+  assert.ok(!ctx.includes('Linen Cloth'), 'a non-wearable item is looked at but never listed as a candidate');
+  assert.ok(!ctx.includes('nil'), `no field may be built from a nil return: ${ctx}`);
+
+  // The bag half is what makes the question answerable: the agent must see WHICH items are
+  // candidates, not merely how many slots are filled. Removing the API must cost the line, not
+  // fabricate an empty bag -- "your bags are empty" and "we could not look" are different facts.
+  vm.run('C_Container = nil');
+  const noApi = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(!noApi.includes('Bags:'), `no reader, no Bags line: ${noApi}`);
+  assert.ok(noApi.includes('Worn:'), 'and the other half is unaffected -- one absent API costs one line');
+  vm.run('C_Container = STUB_C_CONTAINER');
+
+  // A bag holding only non-wearable items is a real answer worth stating as a zero: the agent
+  // should learn "nothing in your bags is gear" rather than receive no line at all.
+  vm.run('STUB.bags = { [0] = { { id = 1009, name = "Linen Cloth", quality = 1 } } }; STUB.bagSlots = { [0] = 1 }');
+  const allCloth = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(allCloth.includes('Bags: 0 of 1 items wearable'), allCloth);
+  assert.ok(!/Bags: 0 of 1 items wearable --/.test(allCloth), 'with nothing to list there is no list, and no dangling separator');
+  // An actual empty bag set is also a stated zero, not a missing line.
+  vm.run('STUB.bags = {}; STUB.bagSlots = {}');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 0 of 0 items wearable'), 'an empty bag reads as 0 of 0');
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
+
+  // No equipped reader at all is UNKNOWN, not naked: the Worn line goes rather than becoming empty.
+  vm.run('GetInventoryItemLink = nil');
+  const noWorn = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(!noWorn.includes('Worn:'), `no reader, no Worn line: ${noWorn}`);
+  assert.ok(noWorn.includes('Bags:'), 'and the bag half still arrives');
+  vm.run('GetInventoryItemLink = STUB_GetInventoryItemLink');
+
+  // The client owns the bag range: an Enum.BagIndex reporting a different set is followed, so a
+  // client that numbers its bags differently is read correctly instead of being read as empty.
+  vm.run('Enum = { BagIndex = { Backpack = 0, Bag_1 = 1, Bag_2 = 2, Bag_3 = 3, Bag_4 = 4 } }');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 4 of 7 items wearable'), 'the enum-defined range is walked');
+  vm.run('Enum = STUB_ENUM');
+  // ...and with no readable enum the documented 0..4 range is the fallback, which is the same set.
+  vm.run('Enum = nil');
+  assert.ok(vm.evaluate('WoWAI.GameContext()').includes('Bags: 4 of 7 items wearable'), '0..4 is the fallback, matching PLAYER_BAGS');
+  vm.run('Enum = STUB_ENUM');
+
+  // A slot the client will not describe contributes nothing rather than a guess: an item whose
+  // equip location is unreadable is counted as seen but never listed as a candidate. The fixture
+  // holds two copies of item 2140 (backpack and bag 1), so a readable 2140 alone is exactly two
+  // candidates out of the seven slots holding something.
+  vm.run('STUB.equipLoc = { [2140] = "INVTYPE_WEAPON" }');
+  const partialUnknown = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(partialUnknown.includes('Bags: 2 of 7 items wearable'), `only the readable items are candidates: ${partialUnknown}`);
+  assert.ok(!partialUnknown.includes('Footpad'), 'an item the client will not classify is not guessed at');
+  assert.ok(!partialUnknown.includes('Dented Buckler'), 'nor is a shield assumed off-hand without the client saying so');
+  vm.run('STUB.equipLoc = STUB_EQUIP_LOC');
+
+  // A quality the client refuses to give (a secret) costs the letter, never the item.
+  vm.run('STUB.quality = { [1] = STUB.secret }');
+  const secretQuality = vm.evaluate('WoWAI.GameContext()');
+  assert.ok(secretQuality.includes('Head Worn Helm,') || secretQuality.includes('Head Worn Helm,'), `the item survives an unreadable quality: ${secretQuality}`);
+  assert.ok(!secretQuality.includes('secret'), 'and a secret is never printed');
+  vm.run('STUB.quality = STUB_QUALITY');
+
+  // A candidate the client will COUNT but not NAME is the case that made the count and the list
+  // disagree, and a count/list disagreement is read as a complete list. Both halves of the fix are
+  // asserted: the unnamed candidate is inside the "+N more", and the counts line survives even
+  // when nothing at all can be listed. Found by fuzzing the line, not by reading it.
+  vm.run('STUB.bags = { [0] = { { id = 2140, name = "Fine Longsword", quality = 2 }, { id = 1121, name = "", quality = 2 } } }; STUB.bagSlots = { [0] = 2 }');
+  const oneUnnamed = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.ok(/^Bags: 2 of 2 items wearable -- Weapon Fine Longsword\(U\), \+1 more$/.test(oneUnnamed), `the unnameable candidate is admitted in the +N, not silently dropped: ${oneUnnamed}`);
+  vm.run('STUB.bags = { [0] = { { id = 1121, name = "", quality = 2 } } }; STUB.bagSlots = { [0] = 1 }');
+  const allUnnamed = vm.evaluate('WoWAI.GameContext()').split('\n').find(l => l.startsWith('Bags: '));
+  assert.equal(allUnnamed, 'Bags: 1 of 1 items wearable, +1 more', 'with nothing nameable the counts line still stands and still accounts for the shortfall');
+  // The invariant, as one assertion over both: whatever the line lists plus whatever its own "+N
+  // more" admits equals the count it states. A line that fails this reads as a complete list.
+  for (const [count, line] of [['2 of 2', oneUnnamed], ['1 of 1', allUnnamed]]) {
+    const found = Number(line.match(/^Bags: (\d+) of/)[1]);
+    const listed = line.includes(' -- ') ? line.split(' -- ')[1].replace(/, \+\d+ more$/, '').split(', ').filter(Boolean).length : 0;
+    const more = Number((line.match(/, \+(\d+) more$/) || [])[1] || 0);
+    assert.equal(listed + more, found, `${count} must add up on the line itself: ${line}`);
+  }
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
+
+  // THE ACCEPTANCE CRITERION, as an assertion rather than a description: from the block alone, an
+  // agent can name a bag candidate AND the item it would replace, which is the whole of "is
+  // anything in my bags an upgrade". Both halves come from one string with no other input.
+  vm.run('STUB.bags = { [0] = { { id = 1121, name = "Footpad\'s Shoes", quality = 2 } } }; STUB.bagSlots = { [0] = 1 }');
+  const upgrade = vm.evaluate('WoWAI.GameContext()');
+  const bagHalf = upgrade.split('\n').find(l => l.startsWith('Bags: '));
+  const wornHalf = upgrade.split('\n').find(l => l.startsWith('Worn: '));
+  assert.ok(/Feet Footpad's Shoes\(U\)/.test(bagHalf), `the candidate is named: ${bagHalf}`);
+  assert.ok(/Feet Worn Boots\(C\)/.test(wornHalf), `and what it would replace is named: ${wornHalf}`);
+  console.log(`      upgrade answer: "${bagHalf}"  vs  "${wornHalf}"`);
+  vm.run('STUB.bags = STUB_BAGS; STUB.bagSlots = STUB_BAG_SLOTS');
+
+  // The budget is measured, not asserted, and the two lists are packed against the real remaining
+  // room rather than cut by the cap -- so every line survives on a full block.
+  const full = vm.evaluate('WoWAI.GameContext()');
+  const bytes = Buffer.byteLength(full, 'utf8');
+  const detail = full.split('\n').map((l, i) => `${i + 1}: [${Buffer.byteLength(l, 'utf8')}] ${l}`).join('\n');
+  assert.ok(bytes < 700, `context is ${bytes} bytes, under CONTEXT_MAX (700)\n${detail}`);
+  assert.ok(full.split('\n').every(l => /^[A-Z][a-z]+: /.test(l)), `every line is a complete Key: value line -- no fragment from the cap\n${detail}`);
+  const wornBytes = Buffer.byteLength(full.split('\n').find(l => l.startsWith('Worn: ')) || '', 'utf8');
+  const bagBytes = Buffer.byteLength(full.split('\n').find(l => l.startsWith('Bags: ')) || '', 'utf8');
+  console.log(`      context block: ${bytes} bytes of 700 (slack ${700 - bytes}); the two inventory lines cost ${wornBytes + bagBytes + 2}`);
 });
 
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {

@@ -978,6 +978,256 @@ local function Plain(v)
 	return v
 end
 
+-- --- What is worn, and what is in the bags ---------------------------------
+-- A count of filled slots cannot answer "do I have an upgrade in my bags?".
+-- That question needs both halves, and both are live client reads: what sits in
+-- each equipped slot, and which items are in the player's bags at all. They
+-- therefore ride this same context block, which means they reach the agent
+-- during play with no /reload and no SavedVariables flush -- the file that only
+-- rewrites on logout is not used here, and nothing new needs it.
+--
+-- Neither list is complete, and that is a measured choice rather than an
+-- oversight: an itemised 16-slot listing measures 437 bytes on its own
+-- (docs/whisperstone/phase-b-l2-scoping.md §5.3) against the 700-byte cap this
+-- block shares with the character lines, so a complete list is not a thing that
+-- fits -- it would be cut, not listed. What fits, and what an upgrade question
+-- actually needs, is the name of each item that could be one and the name of
+-- what it would replace.
+--
+-- Names, not ids: `|Hitem:2140|h[Fine Longsword]|h` already carries the name the
+-- player sees, in the player's own locale, and taking it back out of the link
+-- costs no API call at all. An id is not something the agent can reason about.
+--
+-- Everything here is guarded the way the rest of this file is: an API the beta
+-- client does not have costs its line and nothing else, an unreadable value is
+-- left out rather than guessed, and "we could not look" is never written as
+-- "there is nothing there".
+
+-- Where an item can be worn, in words, from the equip location the client
+-- reports. The keys are the client's own INVTYPE_* tokens -- the very strings
+-- Blizzard's UI compares against (Blizzard_Collections/Classic/Blizzard_HeirloomCollection.lua:256)
+-- -- returned as the 4th value of C_Item.GetItemInfoInstant, which camelot's own
+-- character sheet calls (Blizzard_UIPanels_Game/Camelot/PaperDollFrameStats.lua:637).
+-- Cosmetics (INVTYPE_BODY, INVTYPE_TABARD) and the non-equipment tokens are
+-- deliberately absent: a shirt or a tabard can never be an upgrade, so an item
+-- that maps to nil is left out of the list rather than flagged as a candidate.
+local EQUIP_LOC = {
+	INVTYPE_HEAD = "Head", INVTYPE_NECK = "Neck", INVTYPE_SHOULDER = "Shoulder",
+	INVTYPE_CHEST = "Chest", INVTYPE_ROBE = "Chest", INVTYPE_WAIST = "Waist",
+	INVTYPE_LEGS = "Legs", INVTYPE_FEET = "Feet", INVTYPE_WRIST = "Wrist",
+	INVTYPE_HAND = "Hands", INVTYPE_FINGER = "Finger", INVTYPE_TRINKET = "Trinket",
+	INVTYPE_CLOAK = "Back", INVTYPE_WEAPON = "Weapon", INVTYPE_2HWEAPON = "Two-Hand",
+	INVTYPE_WEAPONMAINHAND = "Main Hand", INVTYPE_WEAPONOFFHAND = "Off Hand",
+	INVTYPE_SHIELD = "Off Hand", INVTYPE_HOLDABLE = "Off Hand",
+	INVTYPE_RANGED = "Ranged", INVTYPE_RANGEDRIGHT = "Ranged",
+	INVTYPE_THROWN = "Ranged", INVTYPE_RELIC = "Ranged",
+}
+
+-- The equipped slots an item can be compared in, in the client's own numbering:
+-- INVSLOT_HEAD = 1 .. INVSLOT_TABARD = 19 (Blizzard_FrameXMLBase/Constants.lua:136-156).
+-- Named here rather than read, because on this side the slot IS the answer.
+-- Shirt (4) and Tabard (19) are absent for the same reason as above, and the two
+-- rings and two trinkets share a label: which of the pair is worn does not
+-- change what the agent compares, and the Gear line above already counts slots.
+local EQUIP_SLOT = {
+	[1] = "Head", [2] = "Neck", [3] = "Shoulder", [5] = "Chest", [6] = "Waist",
+	[7] = "Legs", [8] = "Feet", [9] = "Wrist", [10] = "Hands", [11] = "Finger",
+	[12] = "Finger", [13] = "Trinket", [14] = "Trinket", [15] = "Back",
+	[16] = "Main Hand", [17] = "Off Hand", [18] = "Ranged",
+}
+
+-- Quality as one letter rather than a word: 3 bytes against ~12 for
+-- "(Uncommon)". Fixed letters, not the first letter of the localized
+-- ITEM_QUALITY*_DESC string, so the block does not change shape with the
+-- client's locale -- and the primer spells the letters out for the agent.
+local QUALITY = { "P", "C", "U", "R", "E", "L" }
+
+-- One letter of quality, or nothing when the client will not say (a missing
+-- quality is decoration, not a reason to drop the item).
+local function Quality(q)
+	q = Plain(q)
+	if q == nil then return "" end
+	local letter = QUALITY[q + 1]
+	if not letter then return "" end
+	return "(" .. letter .. ")"
+end
+
+-- The player-visible name out of a link. No API call, and locale-proof: the
+-- client puts a localized name between the brackets for us.
+local function LinkName(link)
+	if type(link) ~= "string" then return nil end
+	local name = link:match("%[(.-)%]")
+	if type(name) == "string" and name ~= "" then return name end
+end
+
+-- The wear slot an item id belongs to, or nil when the client cannot say or the
+-- item is not wearable. GetItemInfoInstant is the variant that does not need the
+-- item's data cached, which is why it is the one used here.
+local function EquipSlot(itemID)
+	if type(itemID) ~= "number" then return nil end
+	local _, _, _, loc = Try(C_Item and C_Item.GetItemInfoInstant, itemID)
+	if type(loc) ~= "string" then return nil end
+	return EQUIP_LOC[loc]
+end
+
+-- The player's bags, from the client's own enum where it can be read: Enum.BagIndex
+-- is a real table on Forever -- camelot's bank frame walks it
+-- (Blizzard_UIPanels_Game/Camelot/BankFrame.lua:187) -- with Backpack = 0 and
+-- Bag_1..Bag_4 = 1..4 (Blizzard_APIDocumentationGenerated/BagIndexConstantsDocumentation.lua).
+-- The literal fallback is the same range StatForge carries (Constants.lua:41,
+-- PLAYER_BAGS = { 0, 1, 2, 3, 4 }). The reagent bag (5) is deliberately outside
+-- the range: it holds reagents and cannot hold gear.
+local function Bags()
+	local first, last = 0, 4
+	local bi = type(_G.Enum) == "table" and _G.Enum.BagIndex
+	if type(bi) == "table" then
+		if type(bi.Backpack) == "number" then first = bi.Backpack end
+		if type(bi.Bag_4) == "number" then last = bi.Bag_4 end
+	end
+	if last < first or last - first > 8 then last = first + 4 end
+	local list = {}
+	for bag = first, last do table.insert(list, bag) end
+	return list
+end
+
+-- One entry per equipped slot that holds something wearable: "Head Worn Helm(C)".
+-- Empty slots are simply absent -- the Gear line above is the count -- and a slot
+-- the client will not describe contributes nothing rather than a guess.
+--
+-- Returns nil, not an empty list, when there is no equipped reader at all:
+-- "wearing nothing" and "could not be read" are different facts, and only the
+-- first is safe to state. The label is the slot's own name on this side, because
+-- here the slot number IS the answer; the item's INVTYPE_* is the client's
+-- opinion about the item, which is what the bag half needs and this half does not.
+local function WornParts()
+	if type(_G.GetInventoryItemLink) ~= "function" then return nil end
+	local total = Plain(_G.NUM_INVSLOTS) or Plain(_G.INVSLOT_LAST_EQUIPPED) or 19
+	if not (total > 0) then return nil end
+	local out = {}
+	for slot = 1, total do
+		local label = EQUIP_SLOT[slot]
+		if label then
+			local name = LinkName(Try(_G.GetInventoryItemLink, "player", slot))
+			if name then
+				out[#out + 1] = label .. " " .. name .. Quality(Try(_G.GetInventoryItemQuality, "player", slot))
+			end
+		end
+	end
+	return out
+end
+
+-- The wearable items in the player's bags, in scan order (backpack, then the
+-- four bags, slots ascending), each with the slot it would compete for:
+-- "Chest Fine Robe(U)".
+--
+-- Returns parts, items seen, and wearable items found -- three values, because
+-- they are three different facts and the line states all of them: how much was
+-- looked at, how much of it was gear, and which gear. A bag holding six stacks
+-- of linen and one robe must not read as "one item in the bag".
+--
+-- nil (no line at all) when the container API is missing, because "the bags are
+-- empty" and "we could not look" are different facts and only one of them is
+-- safe to state -- the same distinction StatForge draws in its own
+-- ContainerApiAbsent (Snapshot.lua:200). The namespaced pair is the real one
+-- here: camelot's own bag bar and bank frame call C_Container.GetContainerNumSlots
+-- and C_Container.GetContainerItemInfo (Camelot/MainMenuBarBagButtons.lua:47,61,65;
+-- Camelot/BankFrame.lua:98) and there is no bare global to fall back to. The
+-- info table's own fields are read (itemID, itemName, quality -- the structure
+-- ContainerDocumentation.lua:766 lists) rather than a second API's returns, and
+-- a slot whose id is absent or unreadable counts as seen but never as found:
+-- seen-but-unknown is exactly the case that must not be guessed at.
+local function BagParts()
+	local api = _G.C_Container
+	if type(api) ~= "table" or type(api.GetContainerNumSlots) ~= "function" then return nil end
+	if type(api.GetContainerItemInfo) ~= "function" then return nil end
+	local seen, found, parts = 0, 0, {}
+	for _, bag in ipairs(Bags()) do
+		local slots = Plain(Try(api.GetContainerNumSlots, bag))
+		if slots and slots > 0 then
+			for slot = 1, slots do
+				local info = Try(api.GetContainerItemInfo, bag, slot)
+				if type(info) == "table" then
+					seen = seen + 1
+					local label = EquipSlot(Plain(info.itemID))
+					if label then
+						found = found + 1
+						-- The name comes from the info table's own field; the link is
+						-- the fallback, since the client fills both.
+						local name = type(info.itemName) == "string" and info.itemName or LinkName(info.hyperlink)
+						if type(name) == "string" and name ~= "" then
+							parts[#parts + 1] = label .. " " .. name .. Quality(info.quality)
+						end
+					end
+				end
+			end
+		end
+	end
+	return parts, seen, found
+end
+
+-- One line from the left while the budget holds, plus an explicit "+N more" when
+-- it does not. Returns nil when not even the first entry fits, so a line is
+-- either whole or absent.
+--
+-- `total` is the number of entries that EXIST, which is not always #parts: the bag
+-- half can count a candidate it cannot name, and passing the true total is what keeps
+-- the line from contradicting its own count. Every entry the reader has not been shown
+-- -- dropped by the budget or unnameable -- is inside the one suffix.
+--
+-- The counter is the point rather than a nicety: a list that stops early and
+-- says nothing about it is read as the whole list, which is the same failure as
+-- a fabricated zero -- the agent would conclude it has seen every candidate.
+-- With the count, a truncated line still says truthfully how much it is not
+-- showing.
+--
+-- Room for that suffix is reserved WHILE entries are being accepted, against the
+-- exact suffix that would follow each candidate -- `", +" .. n .. " more"` --
+-- rather than added afterwards. A suffix bolted on past the budget would be the
+-- one thing the 700-byte cap cuts, leaving a list that stops early and admits
+-- nothing, which is the exact failure this function exists to prevent. Reserving
+-- it exactly (not a worst case) is what lets the last entry in fit when it can.
+local function PackLine(prefix, parts, total, budget, sep)
+	sep = sep or ": "
+	local out, shown = nil, 0
+	for _, p in ipairs(parts) do
+		local try = out and (out .. ", " .. p) or p
+		local reserve = (total > shown + 1) and #(", +" .. (total - shown - 1) .. " more") or 0
+		if #prefix + #sep + #try + reserve > budget then break end
+		out = try
+		shown = shown + 1
+	end
+	if not out then return nil end
+	local line = prefix .. sep .. out
+	if shown < total then line = line .. ", +" .. (total - shown) .. " more" end
+	return line
+end
+
+-- The bag line, or nil when there is no reader at all (caught by the caller).
+-- The counts come first and are never dropped: "<found> of <seen> items wearable" states how
+-- much of the bags was looked at and how much of it was even a candidate, and that is the
+-- complete fact the list below it can only be a sample of. Zero wearable items with a
+-- non-zero item count is a real, useful answer -- "nothing in your bags is gear" -- which is
+-- exactly what a bare absence could not say.
+--
+-- Two defects are fixed here, both found by fuzzing the line rather than reading it, and both
+-- the same failure: a line whose count and list contradict each other, which the agent reads
+-- as a complete list.
+--   1. An earlier version returned nil when nothing was listable, dropping the whole line and
+--      with it the count -- so a character carrying wearable items the client would not name
+--      read as "no bag data", a fabricated absence of exactly the kind this file refuses.
+--   2. The list was measured against #parts instead of the count, so "2 of 2 items wearable --
+--      <one item>" read as complete when it was missing a candidate.
+-- `found`, never `#parts`, is the number of candidates: a named entry and an unnameable one are
+-- both candidates the reader is owed. When nothing can be listed -- unnameable, or no room --
+-- the line still carries the counts and the whole shortfall in its own "+N more", so the
+-- number of candidates the reader has not been shown is ALWAYS on the line.
+local function BagLine(parts, seen, found, budget)
+	local prefix = "Bags: " .. found .. " of " .. seen .. " items wearable"
+	if found == 0 then return prefix end
+	local line = (budget > 0 and #parts > 0) and PackLine(prefix, parts, found, budget, " -- ") or nil
+	return line or (prefix .. ", +" .. found .. " more")
+end
+
 -- A few lines about the game and the character, as the bridge will show them to the agent.
 function WoWAI.GameContext()
 	local lines = {}
@@ -1146,11 +1396,12 @@ function WoWAI.GameContext()
 	-- equivalent -- so this is a signature change, not a rename. A spec of 0 (or an index the
 	-- client cannot describe, e.g. before the first talent point) yields no line: absence over a
 	-- plausible-looking zero.
+	local tail = {}
 	local spec = Try(C_SpecializationInfo and C_SpecializationInfo.GetSpecialization)
 	if type(spec) == "number" and spec > 0 then
 		local _, sname, _, _, _, _, points = Try(C_SpecializationInfo.GetSpecializationInfo, spec)
 		if type(sname) == "string" and sname ~= "" then
-			table.insert(lines, "Talents: " .. sname .. (type(points) == "number" and (" " .. points) or ""))
+			table.insert(tail, "Talents: " .. sname .. (type(points) == "number" and (" " .. points) or ""))
 		end
 	end
 
@@ -1184,10 +1435,79 @@ function WoWAI.GameContext()
 			end
 		end
 	end
-	if #parts > 0 then table.insert(lines, "Professions: " .. table.concat(parts, ", ")) end
+	if #parts > 0 then table.insert(tail, "Professions: " .. table.concat(parts, ", ")) end
+
+	-- What is worn, item by item, and the wearable items in the bags. These are the two
+	-- halves of "do I have an upgrade in my bags?": the bag half names the candidates, the
+	-- worn half names what each candidate would replace. Both are live client reads, so they
+	-- reach the agent while the player is logged in -- no /reload, no SavedVariables flush.
+	--
+	-- Where they go is the whole design. They sit AFTER Gear and BEFORE Talents/Professions,
+	-- and they are packed against a budget that already subtracts the Talents/Professions lines
+	-- above. That is stronger than relying on the cap at the end of this function to drop the
+	-- tail: those two lines are the user's real data (a Rogue with two professions), and an
+	-- inventory list that grew until they fell off would be spending someone else's field to
+	-- buy its own. Reserving their room first means the lists get whatever is genuinely left,
+	-- and the low-level character these lines were previously absent for still costs nothing.
+	--
+	-- Within the pair, Worn may take at most half of the remaining room and Bags takes the rest.
+	-- That asymmetry is the decision this card is really about: the worn list is bounded by the
+	-- client's own slot count and is much the same every time, while the bag list is the one
+	-- that answers the question -- so a well-geared character's 19-slot worn list must not be
+	-- able to squeeze the bag candidates out. Both truncate with an explicit "+N more"
+	-- (PackLine), so a short list never reads as a complete one.
+	do
+		local reserved = #table.concat(tail, "\n")
+		if #tail > 0 then reserved = reserved + 1 end
+		local budget = CONTEXT_MAX - #table.concat(lines, "\n") - reserved
+		if budget > 8 then
+			local bagParts, seen, found = BagParts()
+			local worn = WornParts()
+			-- The bag list is packed FIRST and the worn list takes what is left, and that order
+			-- is the decision this card is really about. The bag half is the one that answers
+			-- "is anything an upgrade" -- it names the candidates -- while the worn half only says
+			-- what each candidate would replace, which the agent cannot do anything with if the
+			-- candidates were the half that got squeezed out. So a well-geared character's long
+			-- worn list must not be able to consume the room first.
+			--
+			-- The bag line is additionally capped at two thirds of the room, so that a genuinely
+			-- full inventory (a bag list far longer than any worn list) cannot take the whole
+			-- budget and leave the worn half with no line at all -- the comparison needs both
+			-- sides of it. Within its cap Bags gets everything it needs, and Worn then gets all
+			-- of the remainder rather than a fixed half: a short bag list costs the worn list
+			-- nothing, which the earlier half-and-half split got wrong (it withheld ~150 bytes
+			-- from a seven-slot worn list while the bag line used 132 of 300).
+			local bagLine = bagParts and BagLine(bagParts, seen, found, math.floor(budget * 2 / 3)) or nil
+			-- The bag line's room is deducted before Worn is packed; the line itself is emitted
+			-- below once its final size is known.
+			if bagLine then budget = budget - (#bagLine + 1) end
+			local wornLine = worn and PackLine("Worn", worn, #worn, budget) or nil
+			-- Emitted worn-first for the reader: the equipment list is the context the bag
+			-- candidates are read against, and it is the shorter of the two in practice.
+			local ordered = {}
+			if wornLine then table.insert(ordered, wornLine) end
+			if bagLine then table.insert(ordered, bagLine) end
+			for _, line in ipairs(ordered) do table.insert(lines, line) end
+		end
+	end
+
+	for _, line in ipairs(tail) do table.insert(lines, line) end
 
 	local s = table.concat(lines, "\n"):gsub("[\30\31]", " ")
-	if #s > CONTEXT_MAX then s = s:sub(1, CONTEXT_MAX) end
+	-- Every line above was packed against the real remaining room, so this is a last resort
+	-- rather than the mechanism. It still has to be a per-LINE cut when it does fire: a plain
+	-- `s:sub(1, CONTEXT_MAX)` cuts mid-line and leaves a fragment that reads as a value --
+	-- measured on this block, it ended on a bare "Professions" with its skills cut away, which
+	-- the agent would read as a profession with no name and no rank. Dropping whole lines keeps
+	-- the same degradation order with no partial field ever reaching the agent.
+	if #s > CONTEXT_MAX then
+		for i = #lines, 1, -1 do
+			local candidate = table.concat(lines, "\n", 1, i):gsub("[\30\31]", " ")
+			if #candidate <= CONTEXT_MAX or i == 1 then
+				return #candidate > CONTEXT_MAX and candidate:sub(1, CONTEXT_MAX) or candidate
+			end
+		end
+	end
 	return s
 end
 

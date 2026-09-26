@@ -264,7 +264,7 @@ renamed, capture stops.** That is config (`capture.enabled`), not code.
 | In-game turns pinned to the `game` profile | done — `-p game`, confirmed in the profile's own log |
 | Approval boundary | **partially verified** — see *Next steps 2*, still open |
 | Real interface number measured | **done** — `16001`, from two sources that agree (below) |
-| Gear / stats / bank awareness | **partly built** — stat totals + filled/empty slot count ride the context (`t_52c484cb`); **itemised** gear, bags and bank still deferred |
+| Gear / stats / bank awareness | **mostly built** — stat totals + filled/empty slot count (`t_52c484cb`), then what is **worn item-by-item** and the **wearable items in the bags** with the slot each competes for (`t_351dc648`), all riding the context; the **bank** is still deferred |
 | StatForge port to Forever | separate project |
 
 **The interface number is resolved, and by two sources that agree.** Only one of them is an
