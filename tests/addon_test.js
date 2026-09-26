@@ -567,6 +567,166 @@ test('a profession tool is not a bag upgrade, and the line says so without leavi
   console.log(`      profession-tool answer: "${toolsOnly}"  (was "2 of 29 ... Main Hand Mining Pick(C)")`);
 });
 
+test('a fully-geared character still fits, and the packing never overshoots the cap', () => {
+  const vm = newVM();
+  // THE CASE THE PACKING WAS DESIGNED FOR AND NOBODY HAD MEASURED. Every other test in this file
+  // runs a 7-of-19 character with a nearly empty bag; the packing reserves the Talents/Professions
+  // tail against the budget so that an overflow costs list detail rather than the user's real data,
+  // and that reservation had an arithmetic hole in it:
+  //
+  //   final = S + 1 + worn + 1 + bag + reserved      (S = the lines above, incl. their newlines)
+  //   budget = CONTEXT_MAX - S - reserved            -- but only the BAG line's separator was
+  //   worn  <= budget - (bag + 1)                       charged, never the worn line's
+  //   => final <= CONTEXT_MAX + 1
+  //
+  // So a packing that computed to exactly 700 assembled to 701, and the last-resort per-line cut
+  // at the end of GameContext() then amputated the WHOLE last line to recover that one byte.
+  // Measured against HEAD before the fix: a geared 17-slot character with a maxed two-profession
+  // tail ended at 652 -- "Professions: Skinning 300/300, First Aid 300/300" gone, 48 bytes of the
+  // user's real data spent to buy back one byte of overflow. The live level-18 character's own
+  // four professions (Blacksmithing/Mining/First Aid/Cooking) trigger the identical shape.
+  //
+  // The sweep below is deterministic and hits the boundary on purpose: bag-name length is the one
+  // lever that slides the block through CONTEXT_MAX one byte at a time, and 8..120 is wide enough
+  // to cross it several times. It is not a random probe -- the failing shapes are the ones where
+  // the assembled length lands exactly on the cap.
+  //
+  // The assertion that catches the whole class is the invariant, applied to every shape: never
+  // over the cap, every line whole, and the reserved tail never spent.
+  const WORN = {
+    [1]: ['Worn Helm', 'INVTYPE_HEAD'], [2]: ['Thick Necklace', 'INVTYPE_NECK'],
+    [3]: ['Chieftain Shoulders', 'INVTYPE_SHOULDER'], [5]: ['Farstrider Tunic', 'INVTYPE_CHEST'],
+    [6]: ['Councillor Sash', 'INVTYPE_WAIST'], [7]: ['Forest Leather Pants', 'INVTYPE_LEGS'],
+    [8]: ['Wild Leather Boots', 'INVTYPE_FEET'], [9]: ['Scarlet Wristguards', 'INVTYPE_WRIST'],
+    [10]: ['Darkmist Handguards', 'INVTYPE_HAND'], [11]: ['Lorekeeper Ring', 'INVTYPE_FINGER'],
+    [12]: ['Primalist Seal', 'INVTYPE_FINGER'], [13]: ['Mark of the Champion', 'INVTYPE_TRINKET'],
+    [14]: ['Insignia of the Horde', 'INVTYPE_TRINKET'], [15]: ['Azure Silk Cloak', 'INVTYPE_CLOAK'],
+    [16]: ['Thunderfury Blessed Blade', 'INVTYPE_WEAPONMAINHAND'], [17]: ['Ravager Shield', 'INVTYPE_WEAPONOFFHAND'],
+    [18]: ['Rhokdelar Longbow', 'INVTYPE_RANGED'],
+  };
+  const ALL_SLOTS = Object.keys(WORN).map(Number);
+  // Names padded to an exact length. 20 is the corpus median for wearable items at
+  // requiredLevel <= 60 (12,518 records: p50 = 18, p90 = 26); the sweep sweeps the BAG names
+  // because that is the list the block packs first.
+  const padded = (base, len) => (base + 'x'.repeat(len)).slice(0, len);
+
+  function setChar({ wornSlots, bagLen, bags, professions }) {
+    const eq = [], q = [], loc = {}, cls = {};
+    for (const slot of wornSlots) {
+      const [name, inv] = WORN[slot];
+      const id = 5000 + slot;
+      eq.push(`[${slot}] = "|cff1eff00|Hitem:${id}|h[${padded(name, 20)}]|h|r",`);
+      q.push(`[${slot}] = 2,`);
+      loc[id] = inv; cls[id] = '{ 4, 2 },';
+    }
+    const bagRows = [];
+    for (let i = 0; i < bags; i++) {
+      const id = 9000 + i;
+      bagRows.push(`{ id = ${id}, name = "${padded('Dragonhide Chestguard', bagLen)}", quality = 3 },`);
+      loc[id] = 'INVTYPE_CHEST'; cls[id] = '{ 4, 2 },';
+    }
+    vm.run(`
+      STUB.equipped = { ${eq.join('\n')} }
+      STUB.quality = { ${q.join('\n')} }
+      STUB.equipLoc = { ${Object.entries(loc).map(([k, v]) => `[${k}] = "${v}",`).join('\n')} }
+      STUB.itemClass = { ${Object.entries(cls).map(([k, v]) => `[${k}] = ${v}`).join('\n')} }
+      STUB.bags = { [0] = { ${bagRows.join('\n')} } }
+      STUB.bagSlots = { [0] = ${bags} }
+      STUB.level = 60
+      STUB.guild = nil
+      STUB.professions = { ${professions.map(p => p[0]).join(', ')} }
+      STUB.professionInfo = {}
+      do
+        local rows = { ${professions.map(p => `{ ${p[0]}, "${p[1]}", ${p[2]}, ${p[3]} }`).join(', ')} }
+        for i = 1, #rows do STUB.professionInfo[rows[i][1]] = { rows[i][2], rows[i][3], rows[i][4], rows[i][1] } end
+      end
+    `);
+  }
+  const MAXED_TWO = [[393, 'Skinning', 300, 300], [129, 'First Aid', 300, 300]];
+  const LIVE_FOUR = [[164, 'Blacksmithing', 53, 150], [186, 'Mining', 98, 150], [129, 'First Aid', 67, 75], [185, 'Cooking', 7, 75]];
+
+  login(vm);
+
+  let checked = 0, worst = 0, worstShape = null, tailSpent = 0;
+  for (const wornSlots of [ALL_SLOTS, ALL_SLOTS.slice(0, 12), ALL_SLOTS.slice(0, 7)]) {
+    for (let bagLen = 8; bagLen <= 120; bagLen++) {
+      for (const professions of [MAXED_TWO, LIVE_FOUR]) {
+        const shape = { wornSlots, bagLen, bags: 1, professions };
+        setChar(shape);
+        const ctx = vm.evaluate('WoWAI.GameContext()');
+        const bytes = Buffer.byteLength(ctx, 'utf8');
+        const detail = ctx.split('\n').map(l => `[${Buffer.byteLength(l, 'utf8')}] ${l}`).join('\n');
+        const label = `worn=${wornSlots.length}/17 bagNameLen=${bagLen} profs=${professions.length}`;
+        if (bytes > worst) { worst = bytes; worstShape = { label, ctx }; }
+        assert.ok(bytes <= 700, `${label}: ${bytes} bytes is over CONTEXT_MAX (700)\n${detail}`);
+        // The per-line cut path must never fire: a block that reaches it has already lost a line.
+        assert.ok(ctx.split('\n').every(l => /^[A-Z][a-z]+: /.test(l)), `${label}: a line was cut mid-way\n${detail}`);
+        // The reservation's whole purpose: whichever list overflows, the user's real data survives.
+        if (!ctx.includes('Professions: ')) {
+          tailSpent++;
+          assert.fail(`${label}: the reserved Professions line was spent on list detail\n${detail}`);
+        }
+        assert.ok(ctx.includes('Talents: '), `${label}: the reserved Talents line was spent\n${detail}`);
+        // The bag half exists whenever a reader does, and its count/list arithmetic must add up.
+        const bag = ctx.split('\n').find(l => l.startsWith('Bags: '));
+        assert.ok(bag, `${label}: no Bags line\n${detail}`);
+        const found = Number(bag.match(/^Bags: (\d+) of/)[1]);
+        const listed = bag.includes(' -- ') ? bag.split(' -- ')[1].replace(/, \+\d+ more$/, '').split(', ').filter(Boolean).length : 0;
+        const more = Number((bag.match(/, \+(\d+) more$/) || [])[1] || 0);
+        assert.equal(listed + more, found, `${label}: the bag line's own count and list disagree: ${bag}`);
+        checked++;
+      }
+    }
+  }
+  console.log(`      geared sweep: ${checked} shapes, worst block ${worst} bytes of 700 (slack ${700 - worst}), reserved tail spent ${tailSpent} times`);
+  console.log(`      worst shape: ${worstShape.label}`);
+  for (const l of worstShape.ctx.split('\n')) console.log(`        [${String(Buffer.byteLength(l, 'utf8')).padStart(3)}] ${l}`);
+
+  // THE DEFERRED-CONTEXT BOUNDARY, at the geared character's block size, measured on the wire
+  // rather than derived. `ContextToSend(limit - #text)` refuses to attach the context when it
+  // will not fit beside the message, and when it does the bridge is left serving the PREVIOUS
+  // context out of state.json -- the failure mode the scoping doc calls the strongest argument
+  // for keeping the block small. This is the number a human needs: the message length above
+  // which the agent starts answering about gear the player has already replaced.
+  //
+  // The context has to have CHANGED to be sent at all (ContextToSend's equality gate), which is
+  // why the send below bumps the money first: a player whose money/XP/position move is the only
+  // state in which the deferred case is reachable.
+  {
+    const vmd = newVM();
+    login(vmd);
+    // The geared character, plus the connect handshake so Send goes through the record path.
+    setChar({ wornSlots: ALL_SLOTS, bagLen: 44, bags: 1, professions: LIVE_FOUR });
+    vmd.run('STUB.RunTimers()');
+    nextSlot(vmd, '{ now = time(), cwd = "", replies = {} }');
+    vmd.run('STUB.now = STUB.now + 6; STUB.Tick()');
+    assert.equal(vmd.evaluate('WoWAI.IsConnected()'), 'true', 'geared probe is connected');
+    const geared = vmd.evaluate('WoWAI.GameContext()');
+    const gearedBytes = Buffer.byteLength(geared, 'utf8');
+    const limit = 3200 - 300; // Codec.MAX_PAYLOAD - 300 (WoWAI.lua Send)
+    // Walk the boundary the formula predicts and assert the wire agrees.
+    function carriesContext(len) {
+      // A fresh VM per length: the strip drops records when they pile up, and the read-back
+      // has to be unambiguous.
+      const v = newVM();
+      login(v);
+      setChar({ wornSlots: ALL_SLOTS, bagLen: 44, bags: 1, professions: LIVE_FOUR });
+      v.run('STUB.RunTimers()');
+      nextSlot(v, '{ now = time(), cwd = "", replies = {} }');
+      v.run('STUB.now = STUB.now + 6; STUB.Tick()');
+      // Change the block so it is not equal to what the bridge last acknowledged.
+      v.run('STUB.money = STUB.money + 1');
+      v.run(`WoWAIInput:SetText(string.rep("m", ${len})); WoWAI.SendFromInput()`);
+      const rec = stripRecords(v).find(r => r.text.length === len);
+      return rec ? rec.ctx !== undefined : null;
+    }
+    const threshold = limit - gearedBytes;
+    assert.equal(carriesContext(threshold), true, `#text = ${threshold} (the last length that fits beside the context) must still carry it`);
+    assert.equal(carriesContext(threshold + 1), false, `#text = ${threshold + 1} is past the limit and must defer the context, not truncate it`);
+    console.log(`      deferred-context boundary: the geared block is ${gearedBytes} bytes; a message of ${threshold} bytes still carries it, ${threshold + 1} does not (limit ${limit} = MAX_PAYLOAD 3200 - 300)`);
+  }
+});
+
 test('a shift-clicked link lands in the focused input and is sent as its name plus tooltip', () => {
   const vm = newVM();
   login(vm);

@@ -1514,9 +1514,22 @@ function WoWAI.GameContext()
 	-- able to squeeze the bag candidates out. Both truncate with an explicit "+N more"
 	-- (PackLine), so a short list never reads as a complete one.
 	do
+		-- Every byte the two inventory lines will cost is charged BEFORE they are packed.
+		-- `reserved` pays for the separator in front of the tail; the two lines need one
+		-- separator EACH on top of it, and those two come off here.
+		--
+		-- Charging one of them instead of two (what this did before) is invisible until the
+		-- block is full, and then it is not: final = S + 1 + worn + 1 + bag + reserved, so a
+		-- packing that believes it fits in CONTEXT_MAX assembles to CONTEXT_MAX + 1. One byte
+		-- over is all it takes for the per-line cut at the end of this function to amputate a
+		-- whole line to recover it. Measured against a geared 17-slot character, not reasoned:
+		-- with a maxed two-profession tail the block assembled to 701 and came out at 652 with
+		-- "Professions: Skinning 300/300, First Aid 300/300" gone -- 48 bytes of the user's real
+		-- data spent to buy back one byte of overflow. The live level-18 character's own four
+		-- professions (Blacksmithing/Mining/First Aid/Cooking) hit the same shape.
 		local reserved = #table.concat(tail, "\n")
 		if #tail > 0 then reserved = reserved + 1 end
-		local budget = CONTEXT_MAX - #table.concat(lines, "\n") - reserved
+		local budget = CONTEXT_MAX - #table.concat(lines, "\n") - reserved - 2
 		if budget > 8 then
 			local bagParts, seen, found = BagParts()
 			local worn = WornParts()
